@@ -1,0 +1,62 @@
+x-worker-base: &worker-base
+  build:
+    context: .
+    target: worker
+  restart: unless-stopped
+  stop_grace_period: 10s
+  env_file: .env
+
+x-worker-env: &worker-env
+  WORKER_LISTEN: ":9000"
+  CONTROLLER_URL: http://controller:8080
+  DATA_DIR: /data
+  HEARTBEAT_INTERVAL: 2s
+  SCRUB_INTERVAL: 10m
+  SCRUB_RATE_MBPS: "50"
+
+services:
+  worker1:
+    <<: *worker-base
+    container_name: worker1
+    environment:
+      <<: *worker-env
+      WORKER_ID: worker1
+      WORKER_ADDR: http://worker1:9000
+    volumes:
+      - worker1-data:/data
+
+  worker2:
+    <<: *worker-base
+    container_name: worker2
+    environment:
+      <<: *worker-env
+      WORKER_ID: worker2
+      WORKER_ADDR: http://worker2:9000
+    volumes:
+      - worker2-data:/data
+
+  worker3:
+    <<: *worker-base
+    container_name: worker3
+    environment:
+      <<: *worker-env
+      WORKER_ID: worker3
+      WORKER_ADDR: http://worker3:9000
+    volumes:
+      - worker3-data:/data
+
+  worker4:
+    <<: *worker-base
+    container_name: worker4
+    environment:
+      <<: *worker-env
+      WORKER_ID: worker4
+      WORKER_ADDR: http://worker4:9000
+    volumes:
+      - worker4-data:/data
+
+volumes:
+  worker1-data:
+  worker2-data:
+  worker3-data:
+  worker4-data:
