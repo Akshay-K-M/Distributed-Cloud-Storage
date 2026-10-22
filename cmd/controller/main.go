@@ -12,9 +12,11 @@ import (
 
 	"objstore/internal/common/httpx"
 	"objstore/internal/controller"
+	"objstore/internal/controller/datapath"
 	"objstore/internal/controller/metadata"
 	"objstore/internal/controller/placement"
 	"objstore/internal/controller/registry"
+	"objstore/internal/workerclient"
 )
 
 func main() {
@@ -53,7 +55,9 @@ func main() {
 	reg.StartSweeper(ctx)
 
 	placer := placement.New(reg)
-	ctrlServer := controller.NewServer(cfg, store, reg, placer, nil, log)
+	wClient := workerclient.New(nil, cfg.ClusterToken)
+	dp := datapath.New(cfg, store, reg, placer, wClient, log)
+	ctrlServer := controller.NewServer(cfg, store, reg, placer, dp, log)
 
 	srv := httpx.NewServer(cfg.ListenAddr, ctrlServer.Handler())
 

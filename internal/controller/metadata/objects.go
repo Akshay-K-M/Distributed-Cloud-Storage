@@ -111,9 +111,9 @@ func (s *DBStore) CommitObject(ctx context.Context, c CommitInput) (*api.Object,
 	// (4) Update object state to COMMITTED
 	res, err := tx.ExecContext(ctx, `
 		UPDATE objects
-		SET state = 'COMMITTED', size = ?, checksum_sha256 = ?, chunk_count = ?, content_type = ?, custom_metadata = ?, modified_at = ?
+		SET name = ?, state = 'COMMITTED', size = ?, checksum_sha256 = ?, chunk_count = ?, content_type = ?, custom_metadata = ?, modified_at = ?
 		WHERE object_id = ? AND state = 'UPLOADING'
-	`, c.Size, c.ChecksumSHA256, c.ChunkCount, contentType, string(metaBytes), now, c.ObjectID)
+	`, c.Name, c.Size, c.ChecksumSHA256, c.ChunkCount, contentType, string(metaBytes), now, c.ObjectID)
 	if err != nil {
 		if isUniqueConstraintError(err) {
 			return nil, ErrNameConflict

@@ -1,11 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"objstore/internal/cli"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "ocs is not yet implemented")
-	os.Exit(1)
+	app := cli.New(os.Stdout, os.Stderr, os.Stdin)
+	code := app.Run(os.Args[1:])
+	os.Exit(code)
 }
