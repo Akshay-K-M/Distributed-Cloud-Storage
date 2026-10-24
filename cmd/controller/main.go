@@ -15,6 +15,7 @@ import (
 	"objstore/internal/controller/datapath"
 	"objstore/internal/controller/metadata"
 	"objstore/internal/controller/placement"
+	"objstore/internal/controller/reconciler"
 	"objstore/internal/controller/registry"
 	"objstore/internal/workerclient"
 )
@@ -58,6 +59,19 @@ func main() {
 	wClient := workerclient.New(nil, cfg.ClusterToken)
 	dp := datapath.New(cfg, store, reg, placer, wClient, log)
 	ctrlServer := controller.NewServer(cfg, store, reg, placer, dp, log)
+
+	recon := reconciler.New(cfg, store, reg, placer, wClient, dp, log)
+	recon.Start(ctx)
+
+	ctrlServer.SetReconciler(recon)
+	ctrlServer.SetWorkerClient(wClient)
+
+	reg.OnStatusChange(func(wID, from, to string) {
+		recon.Wake()
+	})
+	dp.SetReconcileWakeHook(func() {
+		recon.Wake()
+	})
 
 	srv := httpx.NewServer(cfg.ListenAddr, ctrlServer.Handler())
 

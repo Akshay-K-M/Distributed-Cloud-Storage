@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 
 	"objstore/internal/api"
 	"objstore/internal/common/httpx"
+	"objstore/internal/workerclient"
 )
 
 func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
@@ -20,6 +22,16 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("admin status: chunk counts", "err", err)
 		httpx.WriteError(w, r, api.CodeInternal, "failed to compute chunk counts")
 		return
+	}
+
+	// In Phase 4, use live replica counts from reconciler planner
+	if s.reconciler != nil {
+		if under, over, corrupt, lost, err := s.reconciler.StatusCounts(r.Context()); err == nil {
+			chunkCounts.UnderReplicated = under
+			chunkCounts.OverReplicated = over
+			chunkCounts.CorruptReplicas = corrupt
+			chunkCounts.Lost = lost
+		}
 	}
 
 	allWorkers := s.registry.All()
@@ -50,7 +62,10 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminReconcile(w http.ResponseWriter, r *http.Request) {
-	// Reconcile trigger is implemented in Phase 4; for now return OK
+	if s.reconciler != nil {
+		s.reconciler.RunPass(r.Context())
+		go s.reconciler.SyncAllWorkers(context.Background())
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",
 	})
@@ -62,6 +77,14 @@ func (s *Server) handleAdminScrub(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, api.CodeInvalidRequest, "worker query parameter is required")
 		return
 	}
+
+	if s.wClient != nil {
+		wInfo, ok := s.registry.Get(workerID)
+		if ok {
+			_ = s.wClient.Scrub(r.Context(), workerclient.WorkerRef{ID: workerID, Addr: wInfo.Addr})
+		}
+	}
+
 	w.WriteHeader(http.StatusAccepted)
 	httpx.WriteJSON(w, http.StatusAccepted, map[string]string{
 		"status": "accepted",

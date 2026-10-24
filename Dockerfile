@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.22-alpine AS build
+FROM golang:alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
@@ -12,10 +12,13 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/controller ./cmd/controller \
 
 FROM alpine:3.20 AS controller
 RUN apk add --no-cache ca-certificates wget \
- && adduser -D -u 1000 app
+ && adduser -D -u 1000 app \
+ && mkdir -p /data \
+ && chown app:app /data
 COPY --from=build /out/controller /usr/local/bin/controller
 USER app
 EXPOSE 8080
+VOLUME ["/data"]
 HEALTHCHECK --interval=5s --timeout=3s --retries=10 CMD wget -qO- http://localhost:8080/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/controller"]
 

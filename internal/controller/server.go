@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"objstore/internal/controller/metadata"
 	"objstore/internal/controller/placement"
 	"objstore/internal/controller/registry"
+	"objstore/internal/workerclient"
 )
 
 // DataPath interface allows Phase 3A data plane to plug in seamlessly.
@@ -21,15 +23,26 @@ type DataPath interface {
 	Download(w http.ResponseWriter, r *http.Request)
 }
 
+// ReconcilerProvider abstracts the reconciler for the server.
+type ReconcilerProvider interface {
+	RunPass(ctx context.Context)
+	StatusCounts(ctx context.Context) (under, over, corrupt, lost int, err error)
+	SyncWorker(ctx context.Context, workerID string) error
+	SyncAllWorkers(ctx context.Context)
+	Wake()
+}
+
 // Server is the HTTP server for the controller.
 type Server struct {
-	cfg       Config
-	store     metadata.Store
-	registry  *registry.Registry
-	placer    *placement.Placer
-	dataPath  DataPath
-	log       *slog.Logger
-	onSyncInv func(workerID string) // inventory sync hook
+	cfg        Config
+	store      metadata.Store
+	registry   *registry.Registry
+	placer     *placement.Placer
+	dataPath   DataPath
+	reconciler ReconcilerProvider
+	wClient    workerclient.Client
+	log        *slog.Logger
+	onSyncInv  func(workerID string) // inventory sync hook
 }
 
 // NewServer creates a new controller Server.
@@ -50,6 +63,16 @@ func NewServer(cfg Config, store metadata.Store, reg *registry.Registry, placer 
 // SetDataPath attaches the Phase 3A data path implementation.
 func (s *Server) SetDataPath(dp DataPath) {
 	s.dataPath = dp
+}
+
+// SetReconciler attaches the reconciler to the server.
+func (s *Server) SetReconciler(r ReconcilerProvider) {
+	s.reconciler = r
+}
+
+// SetWorkerClient attaches the worker client for admin calls.
+func (s *Server) SetWorkerClient(c workerclient.Client) {
+	s.wClient = c
 }
 
 // SetInventorySyncHook sets the callback hook for inventory sync when a worker registers.
@@ -238,7 +261,11 @@ func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.onSyncInv != nil {
+	if s.reconciler != nil {
+		go func(wID string) {
+			_ = s.reconciler.SyncWorker(context.Background(), wID)
+		}(req.WorkerID)
+	} else if s.onSyncInv != nil {
 		go s.onSyncInv(req.WorkerID)
 	}
 

@@ -87,12 +87,39 @@ type Store interface {
 	DeleteReplica(ctx context.Context, chunkID, workerID string) error
 	DeleteReplicasForWorker(ctx context.Context, workerID string) error
 	CleanupStaleUploading(ctx context.Context) (int, error)
+	ListChunksForReconciliation(ctx context.Context) ([]ChunkReplicaInfo, error)
+	InsertReplicaIfCommitted(ctx context.Context, chunkID, workerID string, now int64) (bool, error)
+	ListDeletingObjects(ctx context.Context) ([]DeletingObjectChunk, error)
+	DeleteObject(ctx context.Context, objectID string) error
+	GetChunkObjectInfo(ctx context.Context, chunkID string) (objectState string, sha256 string, objectID string, err error)
+	ListChunkIDsForWorker(ctx context.Context, workerID string) ([]string, error)
 
 	// Admin stats helpers
 	ObjectCounts(ctx context.Context) (api.ObjectCounts, error)
 	ChunkCounts(ctx context.Context) (api.ChunkCounts, error)
 
 	Close() error
+}
+
+// ChunkReplicaInfo is a chunk and its replicas for reconciliation.
+type ChunkReplicaInfo struct {
+	ChunkID  string
+	Size     int64
+	SHA256   string
+	Replicas []ReplicaRow
+}
+
+// ReplicaRow represents one chunk replica.
+type ReplicaRow struct {
+	WorkerID string
+	State    string
+}
+
+// DeletingObjectChunk describes a replica belonging to an object in DELETING state.
+type DeletingObjectChunk struct {
+	ObjectID string
+	ChunkID  string
+	WorkerID string
 }
 
 // DBStore implements Store using SQLite with two connection pools (writeDB, readDB).

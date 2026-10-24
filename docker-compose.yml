@@ -4,7 +4,11 @@ x-worker-base: &worker-base
     target: worker
   restart: unless-stopped
   stop_grace_period: 10s
-  env_file: .env
+  env_file:
+    - .env
+  depends_on:
+    controller:
+      condition: service_healthy
 
 x-worker-env: &worker-env
   WORKER_LISTEN: ":9000"
@@ -13,8 +17,45 @@ x-worker-env: &worker-env
   HEARTBEAT_INTERVAL: 2s
   SCRUB_INTERVAL: 10m
   SCRUB_RATE_MBPS: "50"
+  CLUSTER_TOKEN: ${CLUSTER_TOKEN:-dev-secret-change-me}
 
 services:
+  controller:
+    build:
+      context: .
+      target: controller
+    container_name: controller
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      CLUSTER_TOKEN: ${CLUSTER_TOKEN:-dev-secret-change-me}
+      LISTEN_ADDR: ":8080"
+      DB_PATH: /data/meta.db
+      CHUNK_SIZE: "1048576"
+      REPLICATION_FACTOR: "2"
+      WRITE_ACKS: "2"
+      UPLOAD_PARALLELISM: "4"
+      MAX_CONCURRENT_UPLOADS: "16"
+      MAX_OBJECT_BYTES: "5368709120"
+      DOWNLOAD_PREFETCH: "2"
+      HEARTBEAT_INTERVAL: 2s
+      SUSPECT_AFTER: 6s
+      DEAD_AFTER: 15s
+      REPAIR_CONCURRENCY: "2"
+      REPAIR_DELAY: 5s
+      REPAIR_ENABLED: "true"
+      STARTUP_GRACE: 10s
+      RECONCILE_INTERVAL: 5s
+      INVENTORY_SYNC_INTERVAL: 30s
+    volumes:
+      - controller-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
   worker1:
     <<: *worker-base
     container_name: worker1
@@ -55,7 +96,21 @@ services:
     volumes:
       - worker4-data:/data
 
+  client:
+    build:
+      context: .
+      target: client
+    container_name: client
+    entrypoint: ["sleep", "infinity"]
+    environment:
+      OCS_ENDPOINT: http://controller:8080
+      OCS_TOKEN: ${CLUSTER_TOKEN:-dev-secret-change-me}
+    depends_on:
+      controller:
+        condition: service_healthy
+
 volumes:
+  controller-data:
   worker1-data:
   worker2-data:
   worker3-data:
