@@ -1,3 +1,4 @@
+// This file fetches, verifies, and streams chunks with replica fallback.
 package datapath
 
 import (

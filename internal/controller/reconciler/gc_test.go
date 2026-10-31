@@ -1,3 +1,4 @@
+// These tests verify deletion cleanup and orphan garbage collection.
 package reconciler_test
 
 import (

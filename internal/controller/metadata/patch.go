@@ -1,3 +1,4 @@
+// This file applies validated custom-metadata patches transactionally.
 package metadata
 
 import (

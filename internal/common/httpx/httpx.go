@@ -1,3 +1,4 @@
+// This file provides shared HTTP clients, middleware, and JSON responses.
 package httpx
 
 import (
@@ -136,6 +137,9 @@ type statusWriter struct {
 }
 
 func (w *statusWriter) WriteHeader(code int) {
+	if w.status != 0 {
+		return
+	}
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }

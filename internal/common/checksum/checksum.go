@@ -1,3 +1,4 @@
+// This file provides small helpers for consistent SHA-256 handling.
 package checksum
 
 import (

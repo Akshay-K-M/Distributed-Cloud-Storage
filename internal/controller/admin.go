@@ -1,3 +1,4 @@
+// This file serves controller health, status, reconcile, and scrub endpoints.
 package controller
 
 import (
@@ -24,7 +25,7 @@ func (s *Server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// In Phase 4, use live replica counts from reconciler planner
+	// Reconciler status supplies live replica-health counts when available.
 	if s.reconciler != nil {
 		if under, over, corrupt, lost, err := s.reconciler.StatusCounts(r.Context()); err == nil {
 			chunkCounts.UnderReplicated = under

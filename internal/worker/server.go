@@ -1,3 +1,4 @@
+// This file serves the worker's authenticated chunk and maintenance endpoints.
 package worker
 
 import (

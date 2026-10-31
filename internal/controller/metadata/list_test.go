@@ -1,3 +1,4 @@
+// These tests verify listing filters, delimiters, and cursor pagination.
 package metadata_test
 
 import (

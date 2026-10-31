@@ -1,3 +1,4 @@
+// This file loads and validates controller runtime configuration.
 package controller
 
 import (
@@ -175,11 +176,26 @@ func (c *Config) Validate() error {
 	if c.DownloadPrefetch < 1 {
 		return fmt.Errorf("DOWNLOAD_PREFETCH must be >= 1, got %d", c.DownloadPrefetch)
 	}
+	if c.HeartbeatInterval <= 0 {
+		return fmt.Errorf("HEARTBEAT_INTERVAL must be > 0")
+	}
 	if c.SuspectAfter <= 0 {
 		return fmt.Errorf("SUSPECT_AFTER must be > 0")
 	}
 	if c.DeadAfter <= c.SuspectAfter {
 		return fmt.Errorf("DEAD_AFTER (%v) must be greater than SUSPECT_AFTER (%v)", c.DeadAfter, c.SuspectAfter)
+	}
+	if c.RepairDelay < 0 {
+		return fmt.Errorf("REPAIR_DELAY must be >= 0")
+	}
+	if c.StartupGrace < 0 {
+		return fmt.Errorf("STARTUP_GRACE must be >= 0")
+	}
+	if c.ReconcileInterval <= 0 {
+		return fmt.Errorf("RECONCILE_INTERVAL must be > 0")
+	}
+	if c.InventorySyncInterval <= 0 {
+		return fmt.Errorf("INVENTORY_SYNC_INTERVAL must be > 0")
 	}
 	if c.RepairConcurrency < 1 {
 		return fmt.Errorf("REPAIR_CONCURRENCY must be >= 1, got %d", c.RepairConcurrency)

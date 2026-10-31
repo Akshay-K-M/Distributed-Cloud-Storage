@@ -1,3 +1,4 @@
+// This file synchronizes worker inventories into controller metadata.
 package reconciler
 
 import (

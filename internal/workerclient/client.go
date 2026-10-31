@@ -1,3 +1,4 @@
+// This file implements controller-to-worker HTTP operations and status mapping.
 package workerclient
 
 import (
@@ -15,9 +16,9 @@ import (
 )
 
 var (
-	ErrChunkNotFound     = errors.New("chunk not found")
-	ErrChecksumMismatch  = errors.New("checksum mismatch")
-	ErrUnavailable       = errors.New("unavailable")
+	ErrChunkNotFound    = errors.New("chunk not found")
+	ErrChecksumMismatch = errors.New("checksum mismatch")
+	ErrUnavailable      = errors.New("unavailable")
 )
 
 // WorkerRef identifies a worker for controller→worker calls.

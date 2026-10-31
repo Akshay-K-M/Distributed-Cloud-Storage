@@ -1,3 +1,4 @@
+// These tests verify worker registration, heartbeat recovery, and liveness transitions.
 package registry_test
 
 import (

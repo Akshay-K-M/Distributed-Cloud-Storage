@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Demo 3 verifies distinct replica placement and physical worker distribution.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +14,7 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 log_step "1. Uploading a 2.5 MB object 'obj:demo3/replicated.dat'"
+# Multiple chunks make placement and replica distribution observable.
 dd if=/dev/urandom of="${TMP_DIR}/replicated.dat" bs=1048576 count=2 status=none
 dd if=/dev/urandom of="${TMP_DIR}/tail.dat" bs=524288 count=1 status=none
 cat "${TMP_DIR}/tail.dat" >> "${TMP_DIR}/replicated.dat"
@@ -24,10 +26,10 @@ log_step "2. Querying metadata details for chunk replica locations"
 STAT_OUT=$(${OCS_EXEC} --json stat "obj:demo3/replicated.dat")
 echo "${STAT_OUT}"
 
-# Parse chunks and verify RF=2 and distinct workers
+# Parse the CLI response and verify RF=2 with distinct worker IDs.
 CHUNKS_JSON=$(echo "${STAT_OUT}" | grep -o '"chunks":\[.*\]' || true)
 if [[ -z "${CHUNKS_JSON}" ]]; then
-  # Fallback to direct API
+  # Use the metadata endpoint if the CLI output is not JSON-shaped as expected.
   META=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/objects?name=demo3/replicated.dat")
   OBJ_ID=$(echo "${META}" | grep -o '"object_id":"[^"]*"' | head -1 | cut -d'"' -f4)
   DETAIL=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/objects/${OBJ_ID}/metadata")
@@ -37,7 +39,7 @@ fi
 log_pass "Verified each chunk has exactly 2 distinct replica placements"
 
 log_step "3. Verifying physical chunks on docker containers"
-# Inspect physical chunks on containers if docker is running
+# Inspect worker volumes as an additional placement check.
 if ${COMPOSE_CMD} ps | grep -q "worker1"; then
   for w in worker1 worker2 worker3 worker4; do
     CHUNK_FILES=$(${COMPOSE_CMD} exec -T "$w" find /data/chunks -type f 2>/dev/null || true)

@@ -1,3 +1,4 @@
+// These tests verify registrar heartbeat behavior and retry handling.
 package worker
 
 import (

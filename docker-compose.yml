@@ -1,3 +1,4 @@
+# Local cluster: one metadata controller, four storage workers, and one CLI container.
 x-worker-base: &worker-base
   build:
     context: .
@@ -10,6 +11,7 @@ x-worker-base: &worker-base
     controller:
       condition: service_healthy
 
+# Shared worker settings keep registration and storage behavior consistent.
 x-worker-env: &worker-env
   WORKER_LISTEN: ":9000"
   CONTROLLER_URL: http://controller:8080
@@ -20,6 +22,7 @@ x-worker-env: &worker-env
   CLUSTER_TOKEN: ${CLUSTER_TOKEN:-dev-secret-change-me}
 
 services:
+  # The controller owns public APIs, SQLite metadata, placement, and repair.
   controller:
     build:
       context: .
@@ -56,6 +59,7 @@ services:
       timeout: 2s
       retries: 10
 
+  # Four independent volumes demonstrate replica placement and failure recovery.
   worker1:
     <<: *worker-base
     container_name: worker1
@@ -96,6 +100,7 @@ services:
     volumes:
       - worker4-data:/data
 
+  # Optional interactive shell for running the CLI inside the Compose network.
   client:
     build:
       context: .
@@ -110,6 +115,7 @@ services:
         condition: service_healthy
 
 volumes:
+  # Persistent metadata and worker chunk storage survive container restarts.
   controller-data:
   worker1-data:
   worker2-data:

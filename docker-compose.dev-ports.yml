@@ -1,3 +1,4 @@
+# Expose worker ports on localhost for smoke tests and manual inspection.
 services:
   worker1:
     ports:

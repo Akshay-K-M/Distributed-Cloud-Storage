@@ -1,3 +1,4 @@
+// This file defines CLI application wiring, flags, and command dispatch.
 package cli
 
 import (

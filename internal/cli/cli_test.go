@@ -1,3 +1,4 @@
+// These tests cover CLI parsing, command behavior, and user-visible errors.
 package cli_test
 
 import (
@@ -28,10 +29,10 @@ import (
 
 func TestParseTarget(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantRemote  bool
-		wantID      bool
-		wantValue   string
+		input      string
+		wantRemote bool
+		wantID     bool
+		wantValue  string
 	}{
 		{"obj:photos/cat.jpg", true, false, "photos/cat.jpg"},
 		{"obj:/photos/cat.jpg", true, false, "photos/cat.jpg"},

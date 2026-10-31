@@ -1,3 +1,4 @@
+// These integration tests exercise controller behavior against worker services.
 package controller_test
 
 import (
@@ -53,7 +54,7 @@ func TestController_RealWorkerRegistrationAndHeartbeat(t *testing.T) {
 	ctrlHTTPSrv := httptest.NewServer(ctrlSrv.Handler())
 	defer ctrlHTTPSrv.Close()
 
-	// 2. Setup Real Worker Node from Phase 1
+	// 2. Set up a real worker node for the integration flow.
 	workerDir := t.TempDir()
 	workerStore, err := chunkstore.Open(workerDir)
 	if err != nil {

@@ -1,3 +1,4 @@
+// This file chunks uploads, writes replicas, and commits object metadata.
 package datapath
 
 import (

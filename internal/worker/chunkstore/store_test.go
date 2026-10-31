@@ -1,3 +1,4 @@
+// These tests verify chunk persistence, checksums, quarantine, and idempotence.
 package chunkstore
 
 import (

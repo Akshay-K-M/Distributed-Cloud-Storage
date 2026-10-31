@@ -1,3 +1,4 @@
+// These tests cover streaming upload and download behavior at the controller boundary.
 package datapath_test
 
 import (

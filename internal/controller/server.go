@@ -1,3 +1,4 @@
+// This file wires public and internal controller routes with middleware.
 package controller
 
 import (
@@ -17,7 +18,7 @@ import (
 	"objstore/internal/workerclient"
 )
 
-// DataPath interface allows Phase 3A data plane to plug in seamlessly.
+// DataPath is the controller's streaming data-plane boundary.
 type DataPath interface {
 	Upload(w http.ResponseWriter, r *http.Request)
 	Download(w http.ResponseWriter, r *http.Request)
@@ -60,7 +61,7 @@ func NewServer(cfg Config, store metadata.Store, reg *registry.Registry, placer 
 	}
 }
 
-// SetDataPath attaches the Phase 3A data path implementation.
+// SetDataPath attaches the streaming data path implementation.
 func (s *Server) SetDataPath(dp DataPath) {
 	s.dataPath = dp
 }
@@ -115,11 +116,10 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		s.dataPath.Upload(w, r)
 		return
 	}
-	w.WriteHeader(http.StatusNotImplemented)
 	httpx.WriteJSON(w, http.StatusNotImplemented, api.ErrorBody{
 		Error: api.ErrorDetail{
 			Code:      api.CodeInternal,
-			Message:   "upload is not implemented (Phase 3A)",
+			Message:   "upload is not configured",
 			RequestID: httpx.RequestIDFrom(r.Context()),
 		},
 	})
@@ -130,11 +130,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		s.dataPath.Download(w, r)
 		return
 	}
-	w.WriteHeader(http.StatusNotImplemented)
 	httpx.WriteJSON(w, http.StatusNotImplemented, api.ErrorBody{
 		Error: api.ErrorDetail{
 			Code:      api.CodeInternal,
-			Message:   "download is not implemented (Phase 3A)",
+			Message:   "download is not configured",
 			RequestID: httpx.RequestIDFrom(r.Context()),
 		},
 	})

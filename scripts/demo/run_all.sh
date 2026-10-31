@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Run every end-to-end demo and print a summary of their results.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

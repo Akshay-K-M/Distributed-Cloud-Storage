@@ -1,3 +1,4 @@
+// These tests verify custom metadata validation and patch semantics.
 package metadata_test
 
 import (

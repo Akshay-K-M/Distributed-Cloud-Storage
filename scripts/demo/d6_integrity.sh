@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Demo 6 verifies bit-rot detection, read fallback, scrubbing, and repair.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +14,7 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 log_step "1. Uploading test file 'obj:demo6/integrity_test.bin'"
+# Keep the original checksum for the final integrity assertion.
 dd if=/dev/urandom of="${TMP_DIR}/test.bin" bs=1048576 count=2 status=none
 ORIG_SHA=$(sha256sum "${TMP_DIR}/test.bin" | awk '{print $1}')
 
@@ -23,7 +25,7 @@ log_step "2. Finding chunk 0 replicas and target worker"
 STAT_OUT=$(${OCS_EXEC} stat "obj:demo6/integrity_test.bin")
 echo "${STAT_OUT}"
 
-# Query API directly to get chunk details
+# Query metadata to locate chunk zero and its replica workers.
 META=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/objects?name=demo6/integrity_test.bin")
 OBJ_ID=$(echo "${META}" | grep -o '"object_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 DETAIL=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/objects/${OBJ_ID}/metadata")
@@ -31,7 +33,7 @@ DETAIL=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/object
 CHUNK_0_ID=$(echo "${DETAIL}" | grep -o '"chunk_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 log_info "Target chunk 0 ID: ${CHUNK_0_ID}"
 
-# Identify first worker holding this chunk
+# Select one physical replica to corrupt.
 TARGET_WORKER=""
 for w in worker1 worker2 worker3 worker4; do
   if docker exec "$w" sh -c "find /data/chunks -type f -name '${CHUNK_0_ID}' ! -name '*.meta' | grep -q '${CHUNK_0_ID}'" 2>/dev/null; then
@@ -46,27 +48,32 @@ fi
 log_info "Corrupting replica of ${CHUNK_0_ID} on ${TARGET_WORKER}..."
 
 log_step "3. Corrupting chunk on ${TARGET_WORKER} using dd (bit-flip simulation)"
+# Overwrite a few bytes while leaving the sidecar checksum unchanged.
 CHUNK_FILE=$(docker exec "${TARGET_WORKER}" sh -c "find /data/chunks -type f -name '${CHUNK_0_ID}' ! -name '*.meta' | head -n1")
 docker exec "${TARGET_WORKER}" sh -c "dd if=/dev/zero of='${CHUNK_FILE}' bs=1 count=16 conv=notrunc status=none"
 log_pass "Bit rot injected into ${CHUNK_FILE} on ${TARGET_WORKER}"
 
 log_step "4. Downloading object — controller must detect corrupt replica and fall back seamlessly"
+# The controller must reject the bad copy and stream a healthy replica.
 ${OCS_EXEC} cp "obj:demo6/integrity_test.bin" "${TMP_DIR}/recovered.bin"
 REC_SHA=$(sha256sum "${TMP_DIR}/recovered.bin" | awk '{print $1}')
 assert_eq "${ORIG_SHA}" "${REC_SHA}" "Data integrity preserved via healthy replica fallback"
 log_pass "Read succeeded without client-visible error: SHA256 verified!"
 
 log_step "5. Verifying admin status reports the corrupt replica"
+# The failed read should mark the replica CORRUPT in metadata.
 STATUS=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/status")
 echo "${STATUS}"
 log_pass "Replica corruption registered in cluster state"
 
 log_step "6. Triggering disk scrub on ${TARGET_WORKER}"
+# Ask the worker to quarantine the damaged file immediately.
 SCRUB_RESP=$(curl -sf -X POST -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/scrub?worker=${TARGET_WORKER}")
 echo "Scrub response: ${SCRUB_RESP}"
 log_pass "Admin scrub requested"
 
 log_step "7. Running reconciler to auto-heal corrupted replica"
+# Repair should restore the desired replication factor.
 curl -sf -X POST -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/reconcile" >/dev/null || true
 sleep 3
 HEALED_STATUS=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/status")

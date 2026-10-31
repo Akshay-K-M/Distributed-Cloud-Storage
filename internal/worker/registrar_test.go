@@ -1,3 +1,4 @@
+// These tests verify worker registration and heartbeat request construction.
 package worker
 
 import (

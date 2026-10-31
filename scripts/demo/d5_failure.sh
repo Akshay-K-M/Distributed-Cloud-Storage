@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Demo 5 verifies read failover, degraded writes, repair, and worker recovery.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +14,7 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 log_step "1. Uploading test file 'obj:demo5/failover.bin'"
+# Keep the source checksum so failover is tested byte-for-byte.
 dd if=/dev/urandom of="${TMP_DIR}/failover.bin" bs=1048576 count=2 status=none
 ORIG_SHA=$(sha256sum "${TMP_DIR}/failover.bin" | awk '{print $1}')
 
@@ -20,16 +22,19 @@ ${OCS_EXEC} cp "${TMP_DIR}/failover.bin" "obj:demo5/failover.bin" --overwrite
 log_pass "Upload succeeded"
 
 log_step "2. Simulating worker node failure (stopping worker2)"
+# Stop one replica host after the object is safely committed.
 ${COMPOSE_CMD} stop worker2
 log_pass "worker2 stopped"
 
 log_step "3. Verifying reads still succeed during worker outage (fallback to surviving replica)"
+# The controller should transparently select the healthy replica.
 ${OCS_EXEC} cp "obj:demo5/failover.bin" "${TMP_DIR}/recovered.bin"
 REC_SHA=$(sha256sum "${TMP_DIR}/recovered.bin" | awk '{print $1}')
 assert_eq "${ORIG_SHA}" "${REC_SHA}" "Data integrity preserved during worker outage"
 log_pass "Read succeeded and SHA256 verified intact during outage"
 
 log_step "4. Verifying new writes succeed on surviving alive workers"
+# New writes use the remaining workers while worker2 is unavailable.
 echo "New data during failure" > "${TMP_DIR}/outage_write.txt"
 ${OCS_EXEC} cp "${TMP_DIR}/outage_write.txt" "obj:demo5/outage_write.txt" --overwrite
 log_pass "Write succeeded on remaining 3 alive workers"
@@ -38,7 +43,7 @@ log_step "5. Waiting for worker2 to be marked DEAD and reconciler to heal under-
 log_info "Sleeping 16s (past DEAD_AFTER=15s and REPAIR_DELAY=5s)..."
 sleep 16
 
-# Trigger immediate reconcile pass via admin endpoint
+# Trigger reconciliation after the failure detector and repair delay expire.
 curl -sf -X POST -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/reconcile" >/dev/null || true
 sleep 3
 
@@ -55,7 +60,7 @@ ${COMPOSE_CMD} start worker2
 log_info "worker2 restarted, waiting for heartbeat..."
 sleep 5
 
-# Trigger reconcile to trim over-replicated replicas
+# Reconcile again so recovered workers are trimmed back to the target RF.
 curl -sf -X POST -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/reconcile" >/dev/null || true
 sleep 3
 

@@ -1,3 +1,4 @@
+// This file loads and validates typed values from environment variables.
 package config
 
 import (

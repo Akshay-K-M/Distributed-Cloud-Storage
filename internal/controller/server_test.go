@@ -1,3 +1,4 @@
+// These tests cover controller routing, authentication, and metadata endpoints.
 package controller_test
 
 import (
@@ -76,7 +77,7 @@ func TestServer_StubsReturn501(t *testing.T) {
 	srv, _, _, _ := setupTestServer(t)
 	handler := srv.Handler()
 
-	// POST /api/v1/objects returns 501 in Phase 2
+	// A server without a data path reports a clear configuration error.
 	reqUpload := httptest.NewRequest(http.MethodPost, "/api/v1/objects", nil)
 	recUpload := httptest.NewRecorder()
 	handler.ServeHTTP(recUpload, reqUpload)
@@ -84,7 +85,6 @@ func TestServer_StubsReturn501(t *testing.T) {
 		t.Errorf("expected 501 for upload, got %d", recUpload.Code)
 	}
 
-	// GET /api/v1/objects/{id} returns 501 in Phase 2
 	reqDownload := httptest.NewRequest(http.MethodGet, "/api/v1/objects/some-id", nil)
 	recDownload := httptest.NewRecorder()
 	handler.ServeHTTP(recDownload, reqDownload)

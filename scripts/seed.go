@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 
 	"objstore/internal/common/config"
 	"objstore/internal/controller/metadata"
@@ -47,10 +46,14 @@ func main() {
 
 		chunks := make([]metadata.ChunkCommit, chunkCount)
 		for c := 0; c < chunkCount; c++ {
+			chunkSize := f.size - int64(c)*1048576
+			if chunkSize > 1048576 {
+				chunkSize = 1048576
+			}
 			chunks[c] = metadata.ChunkCommit{
 				ChunkID:  fmt.Sprintf("%s_%d", id, c),
 				Index:    c,
-				Size:     1048576,
+				Size:     chunkSize,
 				SHA256:   fmt.Sprintf("mocksha256chunk%d", c),
 				Replicas: []string{"worker1", "worker2"},
 			}
@@ -72,7 +75,5 @@ func main() {
 		}
 		fmt.Printf("Seeded object: %s (id: %s)\n", obj.Name, obj.ObjectID)
 	}
-
 	fmt.Println("Seeding complete.")
-	_ = os.Stdout
 }

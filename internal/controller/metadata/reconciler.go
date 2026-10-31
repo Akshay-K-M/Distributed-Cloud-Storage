@@ -1,3 +1,4 @@
+// This file exposes metadata queries used by reconciliation and repair.
 package metadata
 
 import (

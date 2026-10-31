@@ -1,3 +1,4 @@
+// This file selects distinct, least-loaded workers for chunk replicas.
 package placement
 
 import (

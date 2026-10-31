@@ -1,3 +1,4 @@
+// This file garbage-collects deleted objects and unreferenced worker chunks.
 package reconciler
 
 import (

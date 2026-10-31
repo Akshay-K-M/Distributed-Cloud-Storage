@@ -1,4 +1,4 @@
--- 001_init.sql
+-- 001_init.sql: durable schema for objects, chunks, replicas, and workers.
 CREATE TABLE IF NOT EXISTS objects (
   object_id        TEXT PRIMARY KEY,
   name             TEXT NOT NULL,

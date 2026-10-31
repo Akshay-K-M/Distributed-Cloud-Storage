@@ -1,3 +1,4 @@
+// This file implements object lifecycle and metadata reads in SQLite.
 package metadata
 
 import (

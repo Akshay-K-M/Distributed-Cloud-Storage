@@ -1,3 +1,4 @@
+// This file defines stable API error codes and their HTTP status mapping.
 package api
 
 // Frozen error codes (plan section 4.3 / 5).

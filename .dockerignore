@@ -1,3 +1,4 @@
+# Keep source images small and exclude local-only artifacts from Docker builds.
 .git
 bin
 *.test

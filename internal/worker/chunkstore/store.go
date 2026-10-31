@@ -1,3 +1,4 @@
+// This file provides atomic, checksummed, content-addressed chunk storage.
 package chunkstore
 
 import (
@@ -20,11 +21,11 @@ import (
 const DefaultMaxChunk int64 = 1048576
 
 var (
-	ErrNotFound          = errors.New("chunk not found")
-	ErrChecksumMismatch  = errors.New("checksum mismatch")
-	ErrInvalidID         = errors.New("invalid chunk id")
-	ErrTooLarge          = errors.New("chunk too large")
-	idPattern            = regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`)
+	ErrNotFound         = errors.New("chunk not found")
+	ErrChecksumMismatch = errors.New("checksum mismatch")
+	ErrInvalidID        = errors.New("invalid chunk id")
+	ErrTooLarge         = errors.New("chunk too large")
+	idPattern           = regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`)
 )
 
 // Meta is the on-disk sidecar and in-memory index record.

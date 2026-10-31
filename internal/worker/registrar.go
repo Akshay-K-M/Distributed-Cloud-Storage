@@ -1,3 +1,4 @@
+// This file registers workers and sends periodic heartbeats to the controller.
 package worker
 
 import (

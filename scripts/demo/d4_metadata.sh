@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Demo 4 verifies custom metadata updates without re-uploading object bytes.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,11 +15,13 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 
 echo "Important document payload" > "${TMP_DIR}/doc.txt"
 
+# Upload bytes once with two initial custom metadata keys.
 log_step "1. Uploading object with initial custom metadata"
 ${OCS_EXEC} cp "${TMP_DIR}/doc.txt" "obj:demo4/doc.txt" --meta "env=prod" --meta "author=alice" --overwrite
 log_pass "Upload succeeded with initial metadata"
 
 log_step "2. Reading metadata using 'ocs meta get'"
+# Read back both keys before changing anything.
 META_GET=$(${OCS_EXEC} meta get "obj:demo4/doc.txt")
 echo "${META_GET}"
 
@@ -31,6 +34,7 @@ fi
 log_pass "Metadata get verified"
 
 log_step "3. Updating metadata using 'ocs meta set'"
+# Patch one existing key and add a new key without uploading the file again.
 ${OCS_EXEC} meta set "obj:demo4/doc.txt" "status=reviewed" "author=bob"
 SET_OUT=$(${OCS_EXEC} meta get "obj:demo4/doc.txt")
 echo "${SET_OUT}"
@@ -44,6 +48,7 @@ fi
 log_pass "Metadata set (update + add) verified"
 
 log_step "4. Removing a key using 'ocs meta rm'"
+# Remove one key while confirming unrelated metadata remains intact.
 ${OCS_EXEC} meta rm "obj:demo4/doc.txt" "env"
 RM_OUT=$(${OCS_EXEC} meta get "obj:demo4/doc.txt")
 echo "${RM_OUT}"

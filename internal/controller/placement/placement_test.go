@@ -1,3 +1,4 @@
+// These tests verify deterministic worker placement and capacity balancing.
 package placement_test
 
 import (

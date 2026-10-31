@@ -1,3 +1,4 @@
+// This file contains JSON DTOs shared by clients, controllers, and workers.
 package api
 
 // Frozen DTOs shared by every component (plan section 5).
@@ -103,9 +104,9 @@ type ChunkPutResponse struct {
 
 // Inventory is GET /internal/workers/{id}/chunks.
 type Inventory struct {
-	WorkerID    string            `json:"worker_id"`
-	Chunks      []InventoryChunk  `json:"chunks"`
-	Quarantined []string          `json:"quarantined"`
+	WorkerID    string           `json:"worker_id"`
+	Chunks      []InventoryChunk `json:"chunks"`
+	Quarantined []string         `json:"quarantined"`
 }
 
 // InventoryChunk is one live chunk in a worker inventory.

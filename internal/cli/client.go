@@ -1,3 +1,4 @@
+// This file implements the CLI's HTTP client and streaming file transfers.
 package cli
 
 import (

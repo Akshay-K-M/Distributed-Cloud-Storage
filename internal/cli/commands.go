@@ -1,3 +1,4 @@
+// This file implements user-facing ocs subcommands and their output formats.
 package cli
 
 import (

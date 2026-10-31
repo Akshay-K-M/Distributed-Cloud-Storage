@@ -1,3 +1,4 @@
+// These tests verify desired-state planning for healthy and failed replicas.
 package reconciler_test
 
 import (

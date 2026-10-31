@@ -1,3 +1,4 @@
+// The controller process owns metadata, public APIs, placement, and repair.
 package main
 
 import (

@@ -1,3 +1,4 @@
+// This file opens the SQLite store, runs migrations, and defines store types.
 package metadata
 
 import (
@@ -19,8 +20,8 @@ import (
 var migrationsFS embed.FS
 
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrNameConflict  = errors.New("name conflict")
+	ErrNotFound       = errors.New("not found")
+	ErrNameConflict   = errors.New("name conflict")
 	ErrInvalidRequest = errors.New("invalid request")
 )
 

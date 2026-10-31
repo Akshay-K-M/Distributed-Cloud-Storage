@@ -1,3 +1,4 @@
+// The worker process stores chunks locally and registers with the controller.
 package main
 
 import (

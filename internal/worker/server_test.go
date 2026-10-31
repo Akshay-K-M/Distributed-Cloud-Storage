@@ -1,3 +1,4 @@
+// These tests cover worker HTTP endpoints, authentication, and chunk streaming.
 package worker
 
 import (
@@ -266,4 +267,3 @@ func TestHeadChunk(t *testing.T) {
 		t.Fatalf("head should return empty body, got %d bytes", rr.Body.Len())
 	}
 }
-

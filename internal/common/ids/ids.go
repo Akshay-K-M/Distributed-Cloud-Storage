@@ -1,3 +1,4 @@
+// This file generates and validates identifiers used by stored objects.
 package ids
 
 import (

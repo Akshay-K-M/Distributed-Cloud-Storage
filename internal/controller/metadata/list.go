@@ -1,3 +1,4 @@
+// This file implements object listing, prefix grouping, and pagination.
 package metadata
 
 import (

@@ -1,3 +1,4 @@
+// This file loads and validates worker runtime configuration.
 package worker
 
 import (

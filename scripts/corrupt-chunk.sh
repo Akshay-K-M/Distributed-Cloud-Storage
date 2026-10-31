@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Corrupt one on-disk replica to demonstrate checksum detection and repair.
 # Usage: scripts/corrupt-chunk.sh <worker-container> <chunk_id>
 set -euo pipefail
 WORKER="${1:?worker container}"

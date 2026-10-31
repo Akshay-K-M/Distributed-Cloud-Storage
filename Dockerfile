@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# Multi-stage image for the controller, worker, and CLI binaries.
 FROM golang:alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates

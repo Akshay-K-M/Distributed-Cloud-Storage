@@ -1,3 +1,4 @@
+// These tests verify repair and trim execution against fake workers.
 package reconciler_test
 
 import (

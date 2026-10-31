@@ -1,3 +1,4 @@
+// This file computes desired replica repairs, trims, and lost-chunk status.
 package reconciler
 
 import (

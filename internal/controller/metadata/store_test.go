@@ -1,3 +1,4 @@
+// These tests verify SQLite initialization and object lifecycle persistence.
 package metadata_test
 
 import (

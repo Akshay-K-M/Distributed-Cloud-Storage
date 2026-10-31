@@ -1,3 +1,4 @@
+// This file persists worker, chunk, and replica state for the controller.
 package metadata
 
 import (
@@ -145,7 +146,7 @@ func (s *DBStore) ChunkCounts(ctx context.Context) (api.ChunkCounts, error) {
 		return counts, err
 	}
 
-	// Under and over replicated are populated by reconciler in Phase 4
+	// Under- and over-replication are computed by the reconciler.
 	counts.UnderReplicated = 0
 	counts.OverReplicated = 0
 

@@ -1,3 +1,4 @@
+// This file provides an in-memory worker client for controller tests.
 package workerclient
 
 import (
@@ -24,9 +25,9 @@ type FakeClient struct {
 	chunks map[string]map[string]FakeChunk // workerID -> chunkID -> chunk
 	q      map[string]map[string]struct{}  // workerID -> quarantined ids
 
-	BeforePut func(w WorkerRef, chunkID string) error
-	BeforeGet func(w WorkerRef, chunkID string) error
-	BeforeDel func(w WorkerRef, chunkID string) error
+	BeforePut  func(w WorkerRef, chunkID string) error
+	BeforeGet  func(w WorkerRef, chunkID string) error
+	BeforeDel  func(w WorkerRef, chunkID string) error
 	CorruptGet func(w WorkerRef, chunkID string, data []byte) []byte
 	PutDelay   time.Duration
 	GetDelay   time.Duration

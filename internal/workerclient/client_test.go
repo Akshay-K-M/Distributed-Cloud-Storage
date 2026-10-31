@@ -1,3 +1,4 @@
+// These tests verify worker HTTP client requests, responses, and failures.
 package workerclient
 
 import (

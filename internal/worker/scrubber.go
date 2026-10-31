@@ -1,3 +1,4 @@
+// This file runs periodic checksum scans and quarantines corrupt chunks.
 package worker
 
 import (

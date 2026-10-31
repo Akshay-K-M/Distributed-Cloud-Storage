@@ -1,3 +1,4 @@
+// The ocs executable is the command-line client for the object store.
 package main
 
 import (

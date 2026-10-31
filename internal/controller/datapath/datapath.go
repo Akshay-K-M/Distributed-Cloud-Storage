@@ -1,3 +1,4 @@
+// This file coordinates streamed object uploads and downloads with the store.
 package datapath
 
 import (

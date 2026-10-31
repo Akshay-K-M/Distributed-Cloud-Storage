@@ -1,3 +1,4 @@
+// This file tracks worker liveness, capacity, and in-flight requests.
 package registry
 
 import (

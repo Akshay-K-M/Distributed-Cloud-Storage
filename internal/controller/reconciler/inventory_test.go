@@ -1,3 +1,4 @@
+// These tests verify worker inventory reconciliation and replica state updates.
 package reconciler_test
 
 import (
