@@ -2,6 +2,10 @@
 # Shared logging, readiness, and CLI setup for the end-to-end demos.
 set -euo pipefail
 
+if ! command -v sha256sum >/dev/null; then
+  sha256sum() { shasum -a 256 "$@"; }
+fi
+
 # Output colors keep long demo runs easy to scan.
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -12,7 +16,10 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 ENDPOINT="${OCS_ENDPOINT:-http://localhost:8080}"
-TOKEN="${CLUSTER_TOKEN:-dev-secret-change-me}"
+if [[ -f .env && -z "${CLUSTER_TOKEN:-}" ]]; then
+  source .env
+fi
+TOKEN="${OCS_TOKEN:-${CLUSTER_TOKEN:-dev-secret-change-me}}"
 COMPOSE_CMD="${COMPOSE_CMD:-docker compose}"
 
 # Prefer a local client so temporary files remain visible to the CLI.
@@ -24,7 +31,8 @@ elif command -v go &>/dev/null; then
   # Keep demo-generated temporary files visible to the local CLI process.
   OCS_EXEC="go run ./cmd/ocs"
 else
-  OCS_EXEC="${COMPOSE_CMD} exec -T client ocs"
+  echo "Install the local ocs binary or Go to run the host-side demos." >&2
+  exit 1
 fi
 
 export OCS_ENDPOINT="${ENDPOINT}"
@@ -93,4 +101,46 @@ wait_for_workers() {
     retries=$((retries - 1))
   done
   log_fail "Timed out waiting for ${min_workers} workers to be ALIVE"
+}
+
+# Compare this object's placement map with SHA-256 hashes from real worker files.
+# During an outage, only the three running workers can contribute readable copies.
+check_replicas() {
+  local object="$1" offline="${2:-}" detail id expected actual="" worker rows
+  detail=$(${OCS_EXEC} --json stat "$object") || return 1
+  id=$(jq -er '.object_id' <<< "$detail") || return 1
+  jq -e --arg offline "$offline" '
+    (.chunks | length) > 0 and all(.chunks[];
+      ([.replicas[] | select(.state == "OK" and .worker_id != $offline)
+        | .worker_id] | unique | length) == 2)' <<< "$detail" >/dev/null || return 1
+  expected=$(jq -r --arg offline "$offline" '.chunks[] as $c | $c.replicas[]
+    | select(.state == "OK" and .worker_id != $offline)
+    | [.worker_id, $c.chunk_id, $c.sha256] | @tsv' <<< "$detail" | sort) || return 1
+  for worker in worker1 worker2 worker3 worker4; do
+    [[ "$worker" == "$offline" ]] && continue
+    rows=$(${COMPOSE_CMD} exec -T "$worker" find /data/chunks -type f \
+      -name "${id}_*" ! -name '*.meta' -exec sha256sum '{}' ';') || return 1
+    if [[ -n "$rows" ]]; then
+      actual+=$(awk -v w="$worker" '{n=split($2,p,"/"); print w "\t" p[n] "\t" $1}' <<< "$rows")
+      actual+=$'\n'
+    fi
+  done
+  actual=$(printf '%s' "$actual" | sort)
+  [[ "$actual" == "$expected" ]] || return 1
+  printf '%s\n' "$actual"
+}
+
+wait_until() {
+  local deadline=$((SECONDS + 90))
+  until "$@"; do
+    if (( SECONDS >= deadline )); then
+      log_fail "Timed out waiting for $*"
+    fi
+    sleep 2
+  done
+}
+
+worker_has_status() {
+  curl -fsS -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/admin/status" |
+    jq -e --arg id "$1" --arg state "$2" 'any(.workers[]; .worker_id == $id and .status == $state)' >/dev/null
 }

@@ -1,4 +1,4 @@
-// This file provides atomic, checksummed, content-addressed chunk storage.
+// Package chunkstore persists chunks by ID and verifies their SHA-256 digests.
 package chunkstore
 
 import (
@@ -7,12 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -47,15 +47,16 @@ type Store struct {
 	mu          sync.RWMutex
 	index       map[string]Meta
 	quarantined map[string]struct{}
-	locks       sync.Map // id -> *sync.Mutex
+	locks       [64]sync.Mutex // Fixed stripes bound memory as chunk IDs come and go.
 }
 
 // Open mkdirs, cleans tmp/, scans chunks/, builds the index without rehashing.
 func Open(dir string) (*Store, error) {
-	return open(dir, DefaultMaxChunk)
+	return OpenWithMaxChunk(dir, DefaultMaxChunk)
 }
 
-func open(dir string, maxChunk int64) (*Store, error) {
+// OpenWithMaxChunk applies the same limit used by the worker HTTP handler.
+func OpenWithMaxChunk(dir string, maxChunk int64) (*Store, error) {
 	s := &Store{
 		root:          dir,
 		chunksDir:     filepath.Join(dir, "chunks"),
@@ -101,8 +102,8 @@ func (s *Store) metaPath(id string) string {
 }
 
 func (s *Store) lockID(id string) func() {
-	v, _ := s.locks.LoadOrStore(id, &sync.Mutex{})
-	m := v.(*sync.Mutex)
+	sum := sha256.Sum256([]byte(id))
+	m := &s.locks[int(sum[0])%len(s.locks)]
 	m.Lock()
 	return m.Unlock
 }
@@ -139,7 +140,7 @@ func (s *Store) Put(ctx context.Context, id, wantSHA string, wantSize int64, r i
 		return false, err
 	}
 	gotSHA := hex.EncodeToString(hasher.Sum(nil))
-	if n != wantSize || !equalFold(gotSHA, wantSHA) {
+	if n != wantSize || !strings.EqualFold(gotSHA, wantSHA) {
 		cleanup()
 		return false, ErrChecksumMismatch
 	}
@@ -248,9 +249,11 @@ func (s *Store) Delete(id string) error {
 	}
 	unlock := s.lockID(id)
 	defer unlock()
-	_ = os.Remove(s.dataPath(id))
-	_ = os.Remove(s.metaPath(id))
-	_ = os.Remove(filepath.Join(s.quarantineDir, id))
+	for _, path := range []string{s.dataPath(id), s.metaPath(id), filepath.Join(s.quarantineDir, id)} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err // Keep the index entry so a later delete can retry.
+		}
+	}
 	s.mu.Lock()
 	delete(s.index, id)
 	delete(s.quarantined, id)
@@ -302,16 +305,14 @@ func (s *Store) Scrub(ctx context.Context, rate int64) []string {
 		if err := ctx.Err(); err != nil {
 			return bad
 		}
-		s.mu.RLock()
-		_, ok := s.index[id]
-		s.mu.RUnlock()
-		if !ok {
-			continue
-		}
+		// Verify and quarantine under the same lock as PUT. A repair that
+		// arrives during the scan must never be moved aside as the old bad copy.
+		unlock := s.lockID(id)
 		if !s.verifyOne(ctx, id, tb) {
 			s.quarantine(id)
 			bad = append(bad, id)
 		}
+		unlock()
 	}
 	return bad
 }
@@ -353,12 +354,11 @@ func (s *Store) verifyOne(ctx context.Context, id string, tb *tokenBucket) bool 
 		}
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	return n == meta.Size && equalFold(got, meta.SHA256)
+	return n == meta.Size && strings.EqualFold(got, meta.SHA256)
 }
 
+// Caller holds the chunk lock.
 func (s *Store) quarantine(id string) {
-	unlock := s.lockID(id)
-	defer unlock()
 	s.mu.RLock()
 	_, ok := s.index[id]
 	s.mu.RUnlock()
@@ -467,25 +467,6 @@ func diskCapacity(path string) int64 {
 	return int64(st.Bavail) * int64(st.Bsize)
 }
 
-func equalFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'F' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'F' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
-}
-
 type ctxReader struct {
 	ctx context.Context
 	r   io.Reader
@@ -553,8 +534,3 @@ func copyFile(src, dst string) error {
 	_, err = io.Copy(out, in)
 	return err
 }
-
-// MaxChunk returns the configured max chunk size.
-func (s *Store) MaxChunk() int64 { return s.maxChunk }
-
-func (s *Store) String() string { return fmt.Sprintf("chunkstore(%s)", s.root) }

@@ -30,14 +30,15 @@ func (RealClock) Now() time.Time {
 
 // Worker represents an in-memory worker node state.
 type Worker struct {
-	ID         string
-	Addr       string
-	Status     string // ALIVE, SUSPECT, DEAD
-	LastSeen   time.Time
-	UsedBytes  int64
-	Capacity   int64
-	ChunkCount int
-	InFlight   atomic.Int32
+	ID          string
+	Addr        string
+	Status      string // ALIVE, SUSPECT, DEAD
+	LastSeen    time.Time
+	StatusSince time.Time
+	UsedBytes   int64
+	Capacity    int64
+	ChunkCount  int
+	InFlight    atomic.Int32
 }
 
 // WorkerInfo is an exported immutable snapshot of worker state.
@@ -46,6 +47,7 @@ type WorkerInfo struct {
 	Addr          string
 	Status        string
 	LastSeen      time.Time
+	StatusSince   time.Time
 	UsedBytes     int64
 	Capacity      int64
 	ChunkCount    int
@@ -95,7 +97,10 @@ func (r *Registry) OnStatusChange(hook StatusChangeHook) {
 
 func (r *Registry) notifyStatusChange(workerID, from, to string) {
 	r.log.Info("worker status change", "worker_id", workerID, "from", from, "to", to)
-	for _, h := range r.hooks {
+	r.mu.RLock()
+	hooks := append([]StatusChangeHook(nil), r.hooks...)
+	r.mu.RUnlock()
+	for _, h := range hooks {
 		h(workerID, from, to)
 	}
 }
@@ -113,13 +118,14 @@ func (r *Registry) LoadFromDB(ctx context.Context) error {
 
 	for _, w := range workers {
 		r.workers[w.WorkerID] = &Worker{
-			ID:         w.WorkerID,
-			Addr:       w.Address,
-			Status:     "SUSPECT", // Start as SUSPECT so they heartbeat back or become DEAD
-			LastSeen:   now,
-			UsedBytes:  w.UsedBytes,
-			Capacity:   w.CapacityBytes,
-			ChunkCount: w.ChunkCount,
+			ID:          w.WorkerID,
+			Addr:        w.Address,
+			Status:      "SUSPECT", // Start as SUSPECT so they heartbeat back or become DEAD
+			LastSeen:    now,
+			StatusSince: now,
+			UsedBytes:   w.UsedBytes,
+			Capacity:    w.CapacityBytes,
+			ChunkCount:  w.ChunkCount,
 		}
 	}
 	return nil
@@ -131,42 +137,27 @@ func (r *Registry) Register(ctx context.Context, req api.RegisterRequest) error 
 	nowMs := now.UnixMilli()
 
 	r.mu.Lock()
-	w, exists := r.workers[req.WorkerID]
+	w := r.workers[req.WorkerID]
 	oldStatus := ""
-	if !exists {
-		w = &Worker{
-			ID: req.WorkerID,
-		}
-		r.workers[req.WorkerID] = w
+	if w == nil {
+		w = &Worker{ID: req.WorkerID}
 	} else {
 		oldStatus = w.Status
 	}
-
-	w.Addr = req.Address
-	w.Status = "ALIVE"
-	w.LastSeen = now
-	w.Capacity = req.CapacityBytes
-	w.UsedBytes = req.UsedBytes
-	w.ChunkCount = req.ChunkCount
-
-	row := metadata.WorkerRow{
-		WorkerID:         w.ID,
-		Address:          w.Addr,
-		Status:           "ALIVE",
-		CapacityBytes:    w.Capacity,
-		UsedBytes:        w.UsedBytes,
-		ChunkCount:       w.ChunkCount,
-		RegisteredAt:     nowMs,
-		LastStatusChange: nowMs,
-	}
-	r.mu.Unlock()
-
-	// Persist to DB
-	err := r.store.UpsertWorker(ctx, row)
+	// Serialize durable transitions with heartbeats and the sweeper.
+	err := r.store.UpsertWorker(ctx, metadata.WorkerRow{
+		WorkerID: req.WorkerID, Address: req.Address, Status: "ALIVE",
+		CapacityBytes: req.CapacityBytes, UsedBytes: req.UsedBytes, ChunkCount: req.ChunkCount,
+		RegisteredAt: nowMs, LastStatusChange: nowMs,
+	})
 	if err != nil {
+		r.mu.Unlock()
 		return err
 	}
-
+	w.Addr, w.Status, w.LastSeen, w.StatusSince = req.Address, "ALIVE", now, now
+	w.Capacity, w.UsedBytes, w.ChunkCount = req.CapacityBytes, req.UsedBytes, req.ChunkCount
+	r.workers[w.ID] = w
+	r.mu.Unlock()
 	if oldStatus != "ALIVE" {
 		r.notifyStatusChange(req.WorkerID, oldStatus, "ALIVE")
 	}
@@ -191,18 +182,15 @@ func (r *Registry) Heartbeat(ctx context.Context, req api.HeartbeatRequest) erro
 	w.UsedBytes = req.UsedBytes
 	w.Capacity = req.CapacityBytes
 	w.ChunkCount = req.ChunkCount
-	statusChanged := false
-
-	if oldStatus == "SUSPECT" || oldStatus == "DEAD" {
-		w.Status = "ALIVE"
-		statusChanged = true
+	if oldStatus != "ALIVE" {
+		if err := r.store.SetWorkerStatus(ctx, req.WorkerID, "ALIVE", nowMs); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		w.Status, w.StatusSince = "ALIVE", now
 	}
 	r.mu.Unlock()
-
-	if statusChanged {
-		if err := r.store.SetWorkerStatus(ctx, req.WorkerID, "ALIVE", nowMs); err != nil {
-			r.log.Error("failed to persist worker status recovery", "worker_id", req.WorkerID, "err", err)
-		}
+	if oldStatus != "ALIVE" {
 		r.notifyStatusChange(req.WorkerID, oldStatus, "ALIVE")
 	}
 
@@ -224,20 +212,25 @@ func (r *Registry) Sweep(ctx context.Context) {
 	r.mu.Lock()
 	for _, w := range r.workers {
 		elapsed := now.Sub(w.LastSeen)
-		if w.Status == "ALIVE" && elapsed >= r.suspectAfter {
-			transitions = append(transitions, transition{id: w.ID, from: "ALIVE", to: "SUSPECT"})
-			w.Status = "SUSPECT"
-		} else if w.Status == "SUSPECT" && elapsed >= r.deadAfter {
-			transitions = append(transitions, transition{id: w.ID, from: "SUSPECT", to: "DEAD"})
-			w.Status = "DEAD"
+		var next string
+		switch {
+		case w.Status == "ALIVE" && elapsed >= r.suspectAfter:
+			next = "SUSPECT"
+		case w.Status == "SUSPECT" && elapsed >= r.deadAfter:
+			next = "DEAD"
+		default:
+			continue
 		}
+		if err := r.store.SetWorkerStatus(ctx, w.ID, next, nowMs); err != nil {
+			r.log.Warn("persist worker transition", "worker_id", w.ID, "err", err)
+			continue
+		}
+		transitions = append(transitions, transition{id: w.ID, from: w.Status, to: next})
+		w.Status, w.StatusSince = next, now
 	}
 	r.mu.Unlock()
 
 	for _, tr := range transitions {
-		if err := r.store.SetWorkerStatus(ctx, tr.id, tr.to, nowMs); err != nil {
-			r.log.Error("failed to persist worker transition", "worker_id", tr.id, "to", tr.to, "err", err)
-		}
 		r.notifyStatusChange(tr.id, tr.from, tr.to)
 	}
 }
@@ -262,86 +255,47 @@ func (r *Registry) StartSweeper(ctx context.Context) {
 func (r *Registry) Alive() []WorkerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	now := r.clock.Now()
 	var alive []WorkerInfo
 	for _, w := range r.workers {
 		if w.Status == "ALIVE" {
-			msAgo := now.Sub(w.LastSeen).Milliseconds()
-			if msAgo < 0 {
-				msAgo = 0
-			}
-			alive = append(alive, WorkerInfo{
-				ID:            w.ID,
-				Addr:          w.Addr,
-				Status:        w.Status,
-				LastSeen:      w.LastSeen,
-				UsedBytes:     w.UsedBytes,
-				Capacity:      w.Capacity,
-				ChunkCount:    w.ChunkCount,
-				InFlight:      w.InFlight.Load(),
-				LastSeenMSAgo: msAgo,
-			})
+			alive = append(alive, w.snapshot(now))
 		}
 	}
 	return alive
 }
 
-// All returns snapshots of all registered workers.
+// All returns worker snapshots in stable display order.
 func (r *Registry) All() []WorkerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	now := r.clock.Now()
-	var all []WorkerInfo
+	all := make([]WorkerInfo, 0, len(r.workers))
 	for _, w := range r.workers {
-		msAgo := now.Sub(w.LastSeen).Milliseconds()
-		if msAgo < 0 {
-			msAgo = 0
-		}
-		all = append(all, WorkerInfo{
-			ID:            w.ID,
-			Addr:          w.Addr,
-			Status:        w.Status,
-			LastSeen:      w.LastSeen,
-			UsedBytes:     w.UsedBytes,
-			Capacity:      w.Capacity,
-			ChunkCount:    w.ChunkCount,
-			InFlight:      w.InFlight.Load(),
-			LastSeenMSAgo: msAgo,
-		})
+		all = append(all, w.snapshot(now))
 	}
-	// Sort by ID for deterministic output
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].ID < all[j].ID
-	})
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 	return all
 }
 
-// Get returns the snapshot of a specific worker if known.
 func (r *Registry) Get(id string) (WorkerInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	w, ok := r.workers[id]
 	if !ok {
 		return WorkerInfo{}, false
 	}
-	msAgo := r.clock.Now().Sub(w.LastSeen).Milliseconds()
-	if msAgo < 0 {
-		msAgo = 0
-	}
+	return w.snapshot(r.clock.Now()), true
+}
+
+// Call with the registry lock held so status and usage describe the same instant.
+func (w *Worker) snapshot(now time.Time) WorkerInfo {
 	return WorkerInfo{
-		ID:            w.ID,
-		Addr:          w.Addr,
-		Status:        w.Status,
-		LastSeen:      w.LastSeen,
-		UsedBytes:     w.UsedBytes,
-		Capacity:      w.Capacity,
-		ChunkCount:    w.ChunkCount,
-		InFlight:      w.InFlight.Load(),
-		LastSeenMSAgo: msAgo,
-	}, true
+		ID: w.ID, Addr: w.Addr, Status: w.Status, StatusSince: w.StatusSince,
+		LastSeen: w.LastSeen, LastSeenMSAgo: max(0, now.Sub(w.LastSeen).Milliseconds()),
+		UsedBytes: w.UsedBytes, Capacity: w.Capacity, ChunkCount: w.ChunkCount,
+		InFlight: w.InFlight.Load(),
+	}
 }
 
 // AddUsed optimistically increments (or decrements) the used bytes of a worker.

@@ -5,7 +5,8 @@ WORKDIR /src
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
 ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags="-s -w" -o /out/controller ./cmd/controller \
  && go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \

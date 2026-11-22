@@ -79,14 +79,15 @@ func (s *Server) handleAdminScrub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.wClient != nil {
-		wInfo, ok := s.registry.Get(workerID)
-		if ok {
-			_ = s.wClient.Scrub(r.Context(), workerclient.WorkerRef{ID: workerID, Addr: wInfo.Addr})
-		}
+	wInfo, ok := s.registry.Get(workerID)
+	if !ok {
+		httpx.WriteError(w, r, api.CodeUnknownWorker, "unknown worker")
+		return
 	}
-
-	w.WriteHeader(http.StatusAccepted)
+	if s.wClient == nil || s.wClient.Scrub(r.Context(), workerclient.WorkerRef{ID: workerID, Addr: wInfo.Addr}) != nil {
+		httpx.WriteError(w, r, api.CodeStorageUnavailable, "worker could not accept scrub request")
+		return
+	}
 	httpx.WriteJSON(w, http.StatusAccepted, map[string]string{
 		"status": "accepted",
 		"worker": workerID,

@@ -40,7 +40,6 @@ func TestController_RealWorkerRegistrationAndHeartbeat(t *testing.T) {
 		UploadParallelism:    4,
 		MaxConcurrentUploads: 16,
 		MaxObjectBytes:       5368709120,
-		DownloadPrefetch:     2,
 		HeartbeatInterval:    50 * time.Millisecond,
 		SuspectAfter:         1 * time.Second,
 		DeadAfter:            3 * time.Second,
@@ -49,7 +48,7 @@ func TestController_RealWorkerRegistrationAndHeartbeat(t *testing.T) {
 
 	reg := registry.New(store, cfg.SuspectAfter, cfg.DeadAfter, nil, nil)
 	placer := placement.New(reg)
-	ctrlSrv := controller.NewServer(cfg, store, reg, placer, nil, nil)
+	ctrlSrv := controller.NewServer(cfg, store, reg, nil, nil)
 
 	ctrlHTTPSrv := httptest.NewServer(ctrlSrv.Handler())
 	defer ctrlHTTPSrv.Close()

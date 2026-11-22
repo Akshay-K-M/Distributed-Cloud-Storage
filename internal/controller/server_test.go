@@ -15,7 +15,6 @@ import (
 	"objstore/internal/api"
 	"objstore/internal/controller"
 	"objstore/internal/controller/metadata"
-	"objstore/internal/controller/placement"
 	"objstore/internal/controller/registry"
 )
 
@@ -40,7 +39,6 @@ func setupTestServer(t *testing.T) (*controller.Server, metadata.Store, *registr
 		UploadParallelism:    4,
 		MaxConcurrentUploads: 16,
 		MaxObjectBytes:       5368709120,
-		DownloadPrefetch:     2,
 		HeartbeatInterval:    2 * time.Second,
 		SuspectAfter:         6 * time.Second,
 		DeadAfter:            15 * time.Second,
@@ -48,8 +46,7 @@ func setupTestServer(t *testing.T) (*controller.Server, metadata.Store, *registr
 	}
 
 	reg := registry.New(store, cfg.SuspectAfter, cfg.DeadAfter, nil, nil)
-	placer := placement.New(reg)
-	srv := controller.NewServer(cfg, store, reg, placer, nil, nil)
+	srv := controller.NewServer(cfg, store, reg, nil, nil)
 	return srv, store, reg, cfg
 }
 
@@ -256,12 +253,13 @@ func TestServer_MetadataEndpoints(t *testing.T) {
 		t.Errorf("expected camera key to be removed")
 	}
 
-	// 3. PATCH with non-string value -> 400
-	reqBadPatch := httptest.NewRequest(http.MethodPatch, "/api/v1/objects/"+objID+"/metadata", strings.NewReader(`{"num": 123}`))
-	recBadPatch := httptest.NewRecorder()
-	handler.ServeHTTP(recBadPatch, reqBadPatch)
-	if recBadPatch.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 on non-string patch, got %d", recBadPatch.Code)
+	for _, invalid := range []string{`{"num":123}`, `{"x":"a"} trailing`, `{}{}`, `null`, "{}" + strings.Repeat(" ", 64<<10)} {
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/objects/"+objID+"/metadata", strings.NewReader(invalid))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for invalid patch, got %d", rec.Code)
+		}
 	}
 
 	// 4. GET /api/v1/objects listing

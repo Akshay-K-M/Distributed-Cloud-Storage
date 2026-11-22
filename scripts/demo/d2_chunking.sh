@@ -5,7 +5,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR}/common.sh"
 
-log_step "Demo 2: Chunking (10.5 MB -> 11 Chunks with Non-Power-of-2 Last Chunk)"
+log_step "Demo 2: Chunking (10.5 MB -> 11 Chunks with 512 KiB Final Chunk)"
 
 wait_for_cluster
 wait_for_workers 4
@@ -31,16 +31,16 @@ log_pass "Upload succeeded"
 
 log_step "3. Inspecting metadata via 'ocs stat' to verify 11 chunks"
 # Metadata must expose both the chunk count and the smaller final chunk.
-STAT_OUT=$(${OCS_EXEC} stat "obj:demo2/chunked.dat")
-echo "${STAT_OUT}"
-
-if ! echo "${STAT_OUT}" | grep -qi "chunks:.*11"; then
-  log_fail "Expected 11 chunks reported in stat output"
-fi
-if ! echo "${STAT_OUT}" | grep -q "524288"; then
-  log_fail "Expected 524288 byte final chunk in stat output"
-fi
+${OCS_EXEC} stat "obj:demo2/chunked.dat"
+${OCS_EXEC} --json stat "obj:demo2/chunked.dat" | jq -e '
+  .chunk_count == 11 and (.chunks | length == 11)
+  and ([.chunks[].index] == [range(11)])
+  and all(.chunks[:10][]; .size == 1048576)
+  and .chunks[10].size == 524288' >/dev/null
 log_pass "Stat reports 11 chunks with 524,288 byte final chunk"
+
+log_info "Distinct workers storing this object's chunks:"
+${OCS_EXEC} --json stat "obj:demo2/chunked.dat" | jq -r '[.chunks[].replicas[].worker_id] | unique | join(", ")'
 
 log_step "4. Downloading and verifying SHA-256 reconstruction"
 # Reassembly must preserve chunk order and return the original bytes.

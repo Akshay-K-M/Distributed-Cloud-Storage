@@ -5,3 +5,5 @@ bin
 *.out
 plan.md
 agent-transcripts
+.env
+explanations.md

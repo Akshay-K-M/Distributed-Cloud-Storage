@@ -20,22 +20,23 @@ type ctxKey int
 
 const requestIDKey ctxKey = 1
 
-// NewHTTPClient is the shared process HTTP client (plan 4.4).
+// NewHTTPClient is the shared process HTTP client.
 func NewHTTPClient() *http.Client {
 	dialer := &net.Dialer{Timeout: 3 * time.Second}
 	return &http.Client{
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           dialer.DialContext,
-			MaxIdleConnsPerHost:   32,
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-			ForceAttemptHTTP2:     true,
+			Proxy:               http.ProxyFromEnvironment,
+			DialContext:         dialer.DialContext,
+			MaxIdleConnsPerHost: 32,
+			IdleConnTimeout:     90 * time.Second,
+			// Downloads stage the whole object before sending headers. Worker RPCs
+			// set their own deadlines on the request context.
+			ForceAttemptHTTP2: true,
 		},
 	}
 }
 
-// NewServer wraps a handler with the frozen timeouts (no Read/Write timeout).
+// NewServer wraps a handler with header and idle timeouts for streaming requests.
 func NewServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
@@ -63,7 +64,7 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// WriteError writes the frozen error envelope.
+// WriteError writes a structured API error.
 func WriteError(w http.ResponseWriter, r *http.Request, code, message string) {
 	id := ""
 	if r != nil {

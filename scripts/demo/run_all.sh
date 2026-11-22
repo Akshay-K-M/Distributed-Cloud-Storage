@@ -47,7 +47,7 @@ echo -e "${BOLD}                    DEMO SUITE EXECUTION SUMMARY                
 echo -e "${CYAN}${BOLD}======================================================================${NC}"
 
 for r in "${RESULTS[@]}"; do
-  echo -e "  [${r}"
+  echo -e "  ${r}"
 done
 
 echo -e "${CYAN}======================================================================${NC}"

@@ -1,4 +1,3 @@
-// This file defines CLI application wiring, flags, and command dispatch.
 package cli
 
 import (
@@ -11,7 +10,6 @@ import (
 	"strings"
 )
 
-// CLI is the ocs command-line runner.
 type CLI struct {
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -23,7 +21,6 @@ type CLI struct {
 	client     *APIClient
 }
 
-// New creates a new CLI runner.
 func New(stdout, stderr io.Writer, stdin io.Reader) *CLI {
 	if stdout == nil {
 		stdout = os.Stdout
@@ -60,12 +57,18 @@ var flagsWithValue = map[string]bool{
 	"content-type": true,
 }
 
+// Go stops flag parsing at the first positional argument. Keep flag values
+// together so commands also accept options after the filename.
 func reorderArgs(args []string) []string {
 	var flags []string
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
+		if arg == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if arg != "-" && strings.HasPrefix(arg, "-") {
 			flags = append(flags, arg)
 			flagName := strings.TrimLeft(arg, "-")
 			if strings.Contains(flagName, "=") {
@@ -79,7 +82,18 @@ func reorderArgs(args []string) []string {
 			pos = append(pos, arg)
 		}
 	}
-	return append(flags, pos...)
+	return append(append(flags, "--"), pos...)
+}
+
+// Build the client after parsing both sets of flags so --endpoint works on
+// either side of the command name.
+func (c *CLI) parseFlags(fs *flag.FlagSet, args []string) error {
+	c.bindGlobalFlags(fs)
+	if err := fs.Parse(reorderArgs(args)); err != nil {
+		return err
+	}
+	c.client = newAPIClient(c.Endpoint, c.HTTPClient)
+	return nil
 }
 
 func (c *CLI) errorf(code, format string, args ...any) {
@@ -100,57 +114,35 @@ func (c *CLI) handleError(err error) {
 	}
 }
 
-// Run executes the CLI command with the given argument slice.
 func (c *CLI) Run(args []string) int {
 	return c.RunWithContext(context.Background(), args)
 }
 
-// RunWithContext executes the CLI command with the given context and argument slice.
 func (c *CLI) RunWithContext(ctx context.Context, args []string) int {
 	c.JSON = false
 	c.Quiet = false
 
-	// Check for help flags
-	for _, arg := range args {
-		if arg == "-h" || arg == "--help" || arg == "help" {
+	global := flag.NewFlagSet("ocs", flag.ContinueOnError)
+	global.SetOutput(c.Stderr)
+	c.bindGlobalFlags(global)
+	if err := global.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			c.printUsage()
+			return 0
+		}
+		return 2
+	}
+	if global.NArg() == 0 {
+		c.printUsage()
+		return 2
+	}
+	subcmd, subArgs := global.Arg(0), global.Args()[1:]
+	for _, arg := range subArgs {
+		if arg == "--help" || arg == "-h" {
 			c.printUsage()
 			return 0
 		}
 	}
-
-	// Parse initial global flags before subcommand if any
-	subcmdIdx := -1
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if !strings.HasPrefix(arg, "-") {
-			subcmdIdx = i
-			break
-		}
-		if arg == "--endpoint" || arg == "-endpoint" {
-			if i+1 < len(args) {
-				c.Endpoint = args[i+1]
-				i++
-			}
-		} else if strings.HasPrefix(arg, "--endpoint=") || strings.HasPrefix(arg, "-endpoint=") {
-			parts := strings.SplitN(arg, "=", 2)
-			c.Endpoint = parts[1]
-		} else if arg == "--json" || arg == "-json" {
-			c.JSON = true
-		} else if arg == "--quiet" || arg == "-quiet" {
-			c.Quiet = true
-		}
-	}
-
-	if subcmdIdx == -1 {
-		c.printUsage()
-		return 2
-	}
-
-	subcmd := args[subcmdIdx]
-	subArgs := args[subcmdIdx+1:]
-
-	c.client = newAPIClient(c.Endpoint, c.HTTPClient)
-
 	switch subcmd {
 	case "cp":
 		return c.handleCP(ctx, subArgs)

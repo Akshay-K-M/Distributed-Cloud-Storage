@@ -4,7 +4,6 @@ package datapath
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,7 +12,6 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +27,6 @@ import (
 	"objstore/internal/controller/placement"
 	"objstore/internal/workerclient"
 )
-
-var validMetaKey = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
 func validateObjectName(name string) error {
 	if len(name) < 1 {
@@ -53,21 +49,6 @@ func validateObjectName(name string) error {
 	return nil
 }
 
-func validateCustomMetadata(meta map[string]string) error {
-	if len(meta) > 64 {
-		return errors.New("custom metadata cannot exceed 64 keys")
-	}
-	for k, v := range meta {
-		if !validMetaKey.MatchString(k) {
-			return errors.New("invalid custom metadata key format")
-		}
-		if len(v) > 1024 {
-			return errors.New("custom metadata value must not exceed 1024 bytes")
-		}
-	}
-	return nil
-}
-
 func detectContentType(filePartContentType, name string, firstChunk []byte) string {
 	ct := strings.TrimSpace(filePartContentType)
 	if ct != "" && ct != "application/octet-stream" {
@@ -82,12 +63,6 @@ func detectContentType(filePartContentType, name string, firstChunk []byte) stri
 		return http.DetectContentType(firstChunk)
 	}
 	return "application/octet-stream"
-}
-
-func newTempID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }
 
 type writtenItem struct {
@@ -164,19 +139,28 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 	overwrite := r.URL.Query().Get("overwrite") == "true"
 
 	var (
-		name                string
-		customMeta          map[string]string
-		fileSeen            bool
-		objectID            string
-		chunkCommits        []metadata.ChunkCommit
-		totalBytes          int64
-		objChecksum         string
-		detectedContentType string
-		uploadErr           error
-		fileContentType     string
+		name            string
+		customMeta      map[string]string
+		fileSeen        bool
+		objectID        string
+		chunkCommits    []metadata.ChunkCommit
+		totalBytes      int64
+		objChecksum     string
+		firstChunk      []byte
+		uploadErr       error
+		fileContentType string
 	)
 
 	tracker := &writtenTracker{}
+	committed := false
+	defer func() {
+		if objectID != "" {
+			if !committed {
+				d.abortAndCleanup(objectID, tracker)
+			}
+			d.inFlight.Delete(objectID)
+		}
+	}()
 
 	for {
 		part, err := mr.NextPart()
@@ -208,31 +192,40 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 				httpx.WriteError(w, r, api.CodeInvalidRequest, "metadata part exceeds 64 KiB")
 				return
 			}
-			var meta map[string]string
-			if err := json.Unmarshal(b, &meta); err != nil {
-				httpx.WriteError(w, r, api.CodeInvalidRequest, "invalid custom metadata JSON")
+			var fields map[string]*string
+			if err := json.Unmarshal(b, &fields); err != nil || fields == nil {
+				httpx.WriteError(w, r, api.CodeInvalidRequest, "metadata must be a JSON object of strings")
 				return
 			}
-			if err := validateCustomMetadata(meta); err != nil {
+			customMeta = make(map[string]string, len(fields))
+			for key, value := range fields {
+				if value == nil {
+					httpx.WriteError(w, r, api.CodeInvalidRequest, "upload metadata values must be strings")
+					return
+				}
+				customMeta[key] = *value
+			}
+			if err := metadata.ValidateCustomMetadata(customMeta); err != nil {
 				httpx.WriteError(w, r, api.CodeInvalidRequest, err.Error())
 				return
 			}
-			customMeta = meta
 		case "file":
+			if fileSeen {
+				httpx.WriteError(w, r, api.CodeInvalidRequest, "expected one file per object")
+				return
+			}
 			fileSeen = true
+			// An explicit name may arrive after the file. Only preflight a
+			// conflict if the client has already supplied its chosen name.
+			provisionalName := name
 			if name == "" {
 				name = part.FileName()
 			}
-
-			// Validate name early if known
-			provisionalName := name
-			if provisionalName != "" {
-				if err := validateObjectName(provisionalName); err != nil {
+			if name != "" {
+				if err := validateObjectName(name); err != nil {
 					httpx.WriteError(w, r, api.CodeInvalidRequest, err.Error())
 					return
 				}
-			} else {
-				provisionalName = "upload-" + newTempID()
 			}
 
 			fileContentType = part.Header.Get("Content-Type")
@@ -249,15 +242,8 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 			}
 			objectID = objID
 			d.inFlight.Store(objectID, struct{}{})
-			defer d.inFlight.Delete(objectID)
 
-			var firstChunk []byte
 			chunkCommits, totalBytes, objChecksum, firstChunk, uploadErr = d.streamFileChunks(r.Context(), objectID, part, tracker)
-			if uploadErr != nil {
-				break
-			}
-
-			detectedContentType = detectContentType(fileContentType, name, firstChunk)
 		default:
 			_, _ = io.Copy(io.Discard, io.LimitReader(part, 1<<20))
 		}
@@ -268,7 +254,6 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if uploadErr != nil {
-		d.abortAndCleanup(objectID, tracker)
 		if r.Context().Err() != nil {
 			d.log.Info("client disconnected during upload", "object_id", objectID, "err", uploadErr)
 			return
@@ -291,19 +276,11 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if name == "" {
-		d.abortAndCleanup(objectID, tracker)
-		httpx.WriteError(w, r, api.CodeInvalidRequest, "object name is required")
-		return
+		// Multipart clients may send a binary file part without a filename.
+		name = objectID
 	}
 
 	if err := validateObjectName(name); err != nil {
-		d.abortAndCleanup(objectID, tracker)
-		httpx.WriteError(w, r, api.CodeInvalidRequest, err.Error())
-		return
-	}
-
-	if err := validateCustomMetadata(customMeta); err != nil {
-		d.abortAndCleanup(objectID, tracker)
 		httpx.WriteError(w, r, api.CodeInvalidRequest, err.Error())
 		return
 	}
@@ -315,7 +292,7 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 		Size:           totalBytes,
 		ChecksumSHA256: objChecksum,
 		ChunkCount:     len(chunkCommits),
-		ContentType:    detectedContentType,
+		ContentType:    detectContentType(fileContentType, name, firstChunk),
 		CustomMetadata: customMeta,
 		Overwrite:      overwrite,
 		Chunks:         chunkCommits,
@@ -323,17 +300,16 @@ func (d *DataPath) Upload(w http.ResponseWriter, r *http.Request) {
 
 	committedObj, err := d.store.CommitObject(r.Context(), commit)
 	if errors.Is(err, metadata.ErrNameConflict) {
-		d.abortAndCleanup(objectID, tracker)
 		httpx.WriteError(w, r, api.CodeNameConflict, "object name already exists")
 		return
 	}
 	if err != nil {
-		d.abortAndCleanup(objectID, tracker)
 		d.log.Error("commit object failed", "err", err, "object_id", objectID)
 		httpx.WriteError(w, r, api.CodeInternal, "failed to commit object")
 		return
 	}
 
+	committed = true
 	w.Header().Set("Location", "/api/v1/objects/"+committedObj.ObjectID)
 	httpx.WriteJSON(w, http.StatusCreated, committedObj)
 }

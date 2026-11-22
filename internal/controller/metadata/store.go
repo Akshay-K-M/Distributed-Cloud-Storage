@@ -68,7 +68,7 @@ type ListParams struct {
 	ExactName string
 }
 
-// Store is the interface for controller metadata operations (plan section 2.1).
+// Store is the interface for controller metadata operations.
 type Store interface {
 	BeginUpload(ctx context.Context, name, contentType string, overwrite bool) (objectID string, err error)
 	CommitObject(ctx context.Context, c CommitInput) (*api.Object, error)
@@ -86,7 +86,6 @@ type Store interface {
 	UpsertReplica(ctx context.Context, chunkID, workerID, state string, updatedAt int64) error
 	SetReplicaState(ctx context.Context, chunkID, workerID, state string, updatedAt int64) error
 	DeleteReplica(ctx context.Context, chunkID, workerID string) error
-	DeleteReplicasForWorker(ctx context.Context, workerID string) error
 	CleanupStaleUploading(ctx context.Context) (int, error)
 	ListChunksForReconciliation(ctx context.Context) ([]ChunkReplicaInfo, error)
 	InsertReplicaIfCommitted(ctx context.Context, chunkID, workerID string, now int64) (bool, error)

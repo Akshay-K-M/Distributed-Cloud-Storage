@@ -13,7 +13,7 @@ import (
 	"objstore/internal/worker/chunkstore"
 )
 
-// Server serves the frozen worker internal API (section 5.2).
+// Server serves the internal worker API.
 type Server struct {
 	cfg      Config
 	store    *chunkstore.Store

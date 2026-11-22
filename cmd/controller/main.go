@@ -1,4 +1,4 @@
-// The controller process owns metadata, public APIs, placement, and repair.
+// The controller owns the catalog, the public HTTP API and replica repair.
 package main
 
 import (
@@ -39,41 +39,35 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Cleanup any stale UPLOADING records from interrupted previous runs
+	// No requests from the previous process are still uploading. Inventory
+	// will collect any worker files left behind by these abandoned requests.
 	cleaned, err := store.CleanupStaleUploading(ctx)
 	if err != nil {
 		log.Warn("cleanup stale uploading rows failed", "err", err)
 	} else if cleaned > 0 {
 		log.Info("cleaned stale uploading rows", "count", cleaned)
 	}
-
-	// Initialize worker registry and restore known workers from DB as SUSPECT
 	reg := registry.New(store, cfg.SuspectAfter, cfg.DeadAfter, nil, log)
 	if err := reg.LoadFromDB(ctx); err != nil {
 		log.Error("failed to load known workers from DB", "err", err)
 		os.Exit(1)
 	}
-	reg.StartSweeper(ctx)
 
 	placer := placement.New(reg)
 	wClient := workerclient.New(nil, cfg.ClusterToken)
 	dp := datapath.New(cfg, store, reg, placer, wClient, log)
-	ctrlServer := controller.NewServer(cfg, store, reg, placer, dp, log)
-
+	ctrlServer := controller.NewServer(cfg, store, reg, dp, log)
 	recon := reconciler.New(cfg, store, reg, placer, wClient, dp, log)
-	recon.Start(ctx)
 
 	ctrlServer.SetReconciler(recon)
 	ctrlServer.SetWorkerClient(wClient)
-
-	reg.OnStatusChange(func(wID, from, to string) {
+	// A transition or failed integrity check requests an early repair pass.
+	reg.OnStatusChange(func(_, _, _ string) {
 		recon.Wake()
 	})
-	dp.SetReconcileWakeHook(func() {
-		recon.Wake()
-	})
-
+	dp.SetReconcileWakeHook(recon.Wake)
+	reg.StartSweeper(ctx)
+	recon.Start(ctx)
 	srv := httpx.NewServer(cfg.ListenAddr, ctrlServer.Handler())
 
 	errCh := make(chan error, 1)
@@ -81,7 +75,6 @@ func main() {
 		log.Info("controller listening", "addr", cfg.ListenAddr)
 		errCh <- srv.ListenAndServe()
 	}()
-
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
@@ -93,7 +86,6 @@ func main() {
 			log.Error("server error", "err", err)
 		}
 	}
-
 	cancel()
 	shctx, shcancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shcancel()

@@ -83,9 +83,9 @@ func (s *DBStore) InsertReplicaIfCommitted(ctx context.Context, chunkID, workerI
 // ListDeletingObjects returns chunks and replicas for objects in DELETING state.
 func (s *DBStore) ListDeletingObjects(ctx context.Context) ([]DeletingObjectChunk, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
-		SELECT o.object_id, c.chunk_id, COALESCE(r.worker_id, '')
+		SELECT o.object_id, COALESCE(c.chunk_id, ''), COALESCE(r.worker_id, '')
 		FROM objects o
-		JOIN chunks c ON o.object_id = c.object_id
+		LEFT JOIN chunks c ON o.object_id = c.object_id
 		LEFT JOIN chunk_replicas r ON c.chunk_id = r.chunk_id
 		WHERE o.state = 'DELETING'
 		ORDER BY o.object_id, c.chunk_id

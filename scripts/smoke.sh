@@ -27,15 +27,19 @@ echo "== healthz (no auth)"
 # Health is intentionally public; all chunk operations below require the token.
 curl -fsS "${BASE}/healthz" | grep -q '"status":"ok"'
 
-CHUNK_ID="smoke_0"
+CHUNK_ID="smoke_$$_0"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP" "$TMP.got" "$TMP.sha"; cleanup' EXIT
+# Direct worker PUTs are intentionally absent from the object catalog. Pause
+# the controller throughout this worker-only test so inventory cannot reap them.
+"${COMPOSE[@]}" stop controller >/dev/null
+CONTROLLER_STOPPED=1
 dd if=/dev/urandom of="$TMP" bs=1048576 count=1 status=none
 SHA="$(shasum -a 256 "$TMP" | awk '{print $1}')"
 
 echo "== PUT 1MiB chunk"
 # Upload a full-size chunk and let the worker verify its declared checksum.
-CODE="$(curl -sS -o /tmp/smoke-put.json -w '%{http_code}' \
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
   -X PUT "${BASE}/internal/chunks/${CHUNK_ID}" \
   -H "$AUTH" \
   -H "X-Chunk-SHA256: ${SHA}" \
@@ -67,7 +71,7 @@ for i in $(seq 1 30); do
   sleep 0.2
 done
 test "$CODE" = "404"
-curl -fsS -H "$AUTH" "${BASE}/internal/workers/worker1/chunks" | grep -q quarantined
+curl -fsS -H "$AUTH" "${BASE}/internal/workers/worker1/chunks" | jq -e --arg id "$CHUNK_ID" '.quarantined | index($id) != null' >/dev/null
 
 echo "== PUT a durable chunk, restart, still there"
 # Stop the controller during restart so reconciliation cannot delete this test-only orphan.
@@ -78,8 +82,6 @@ curl -fsS -X PUT "${BASE}/internal/chunks/${CHUNK_ID2}" \
   -H "$AUTH" -H "X-Chunk-SHA256: ${SHA}" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @"$TMP" >/dev/null
-"${COMPOSE[@]}" stop controller >/dev/null
-CONTROLLER_STOPPED=1
 docker restart worker1 >/dev/null
 for i in $(seq 1 30); do
   if curl -fsS -H "$AUTH" "${BASE}/internal/chunks/${CHUNK_ID2}" -o "$TMP.got"; then
@@ -88,8 +90,6 @@ for i in $(seq 1 30); do
   sleep 0.3
 done
 cmp -s "$TMP" "$TMP.got"
-"${COMPOSE[@]}" start controller >/dev/null
-CONTROLLER_STOPPED=0
 
 echo "== DELETE"
 # Deletion is intentionally checked twice because the endpoint is idempotent.

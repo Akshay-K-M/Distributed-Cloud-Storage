@@ -1,64 +1,24 @@
 #!/usr/bin/env bash
-# Demo 4 verifies custom metadata updates without re-uploading object bytes.
+# Change labels on one object and compare its storage records before and after.
 set -euo pipefail
-
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${DIR}/common.sh"
-
-log_step "Demo 4: Custom Metadata Operations (Attach, Get, Patch, Delete Key)"
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 wait_for_cluster
 wait_for_workers 4
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+object=obj:demo4/doc.txt
+echo "Important document payload" > "$tmp/doc.txt"
 
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "${TMP_DIR}"' EXIT
+${OCS_EXEC} cp "$tmp/doc.txt" "$object" --meta env=prod --meta author=alice --overwrite
+${OCS_EXEC} --json stat "$object" > "$tmp/before"
+jq -e '.custom_metadata == {"env":"prod","author":"alice"}' "$tmp/before"
 
-echo "Important document payload" > "${TMP_DIR}/doc.txt"
-
-# Upload bytes once with two initial custom metadata keys.
-log_step "1. Uploading object with initial custom metadata"
-${OCS_EXEC} cp "${TMP_DIR}/doc.txt" "obj:demo4/doc.txt" --meta "env=prod" --meta "author=alice" --overwrite
-log_pass "Upload succeeded with initial metadata"
-
-log_step "2. Reading metadata using 'ocs meta get'"
-# Read back both keys before changing anything.
-META_GET=$(${OCS_EXEC} meta get "obj:demo4/doc.txt")
-echo "${META_GET}"
-
-if ! echo "${META_GET}" | grep -q "env=prod"; then
-  log_fail "Expected env=prod in metadata"
-fi
-if ! echo "${META_GET}" | grep -q "author=alice"; then
-  log_fail "Expected author=alice in metadata"
-fi
-log_pass "Metadata get verified"
-
-log_step "3. Updating metadata using 'ocs meta set'"
-# Patch one existing key and add a new key without uploading the file again.
-${OCS_EXEC} meta set "obj:demo4/doc.txt" "status=reviewed" "author=bob"
-SET_OUT=$(${OCS_EXEC} meta get "obj:demo4/doc.txt")
-echo "${SET_OUT}"
-
-if ! echo "${SET_OUT}" | grep -q "status=reviewed"; then
-  log_fail "Expected status=reviewed in updated metadata"
-fi
-if ! echo "${SET_OUT}" | grep -q "author=bob"; then
-  log_fail "Expected author=bob in updated metadata"
-fi
-log_pass "Metadata set (update + add) verified"
-
-log_step "4. Removing a key using 'ocs meta rm'"
-# Remove one key while confirming unrelated metadata remains intact.
-${OCS_EXEC} meta rm "obj:demo4/doc.txt" "env"
-RM_OUT=$(${OCS_EXEC} meta get "obj:demo4/doc.txt")
-echo "${RM_OUT}"
-
-if echo "${RM_OUT}" | grep -q "env="; then
-  log_fail "Expected env to be removed from metadata"
-fi
-if ! echo "${RM_OUT}" | grep -q "author=bob"; then
-  log_fail "Expected author=bob to remain in metadata"
-fi
-log_pass "Metadata rm verified"
-
-echo -e "\n${GREEN}${BOLD}✓ Demo 4 PASSED: Metadata operations verified!${NC}"
+${OCS_EXEC} meta set "$object" author=bob status=reviewed
+${OCS_EXEC} meta rm "$object" env
+${OCS_EXEC} --json stat "$object" > "$tmp/after"
+jq -e '.custom_metadata == {"author":"bob","status":"reviewed"}' "$tmp/after"
+# Only user labels and their modification timestamp may change.
+diff <(jq -S 'del(.custom_metadata, .modified_at)' "$tmp/before") \
+     <(jq -S 'del(.custom_metadata, .modified_at)' "$tmp/after")
+log_pass "Labels changed on the same object, with the same chunks, replicas and checksums"

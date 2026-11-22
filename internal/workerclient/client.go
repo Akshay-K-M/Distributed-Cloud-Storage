@@ -27,7 +27,7 @@ type WorkerRef struct {
 	Addr string
 }
 
-// Client is the kickoff contract used by the controller.
+// Client is the worker operations used by uploads, downloads and maintenance.
 type Client interface {
 	PutChunk(ctx context.Context, w WorkerRef, chunkID, sha256hex string, size int64, body io.Reader) error
 	GetChunk(ctx context.Context, w WorkerRef, chunkID string) (body io.ReadCloser, size int64, storedSHA string, err error)

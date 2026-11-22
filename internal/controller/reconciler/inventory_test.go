@@ -101,6 +101,37 @@ func TestInventorySync(t *testing.T) {
 		t.Errorf("expected reconciler to be woken after sync")
 	}
 
+	// A matching sidecar cannot overrule corruption found by a verified read.
+	if err := store.SetReplicaState(ctx, chunkID, "w1", "CORRUPT", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncWorker(ctx, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	checked, err := store.GetObjectWithChunks(ctx, objID)
+	if err != nil || checked.Chunks[0].Replicas[0].State != "CORRUPT" {
+		t.Fatalf("inventory cleared a corruption finding: %+v, %v", checked, err)
+	}
+
+	// A quarantined copy remains associated with its object until cleanup.
+	fakeClient.Quarantine("w1", chunkID)
+	fakeClient.Quarantine("w1", orphanID)
+	if err := syncer.SyncWorker(ctx, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	damaged, err := store.GetObjectWithChunks(ctx, objID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicas := damaged.Chunks[0].Replicas
+	if len(replicas) != 1 || replicas[0].State != "CORRUPT" {
+		t.Fatalf("expected a recorded corrupt replica: %+v", replicas)
+	}
+	inv, err := fakeClient.ListChunks(ctx, wRef)
+	if err != nil || len(inv.Quarantined) != 1 || inv.Quarantined[0] != chunkID {
+		t.Fatalf("quarantined orphan cleanup: %+v, %v", inv, err)
+	}
+
 	// 2. Test lost chunk: delete chunk physically from worker, sync should remove DB replica row
 	_ = fakeClient.DeleteChunk(ctx, wRef, chunkID)
 	_ = syncer.SyncWorker(ctx, "w1")

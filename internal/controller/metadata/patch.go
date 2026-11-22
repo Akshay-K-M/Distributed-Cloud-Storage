@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"time"
 
@@ -13,6 +14,22 @@ import (
 )
 
 var validKeyRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+
+// ValidateCustomMetadata applies the same limits at upload and after a patch.
+func ValidateCustomMetadata(labels map[string]string) error {
+	if len(labels) > 64 {
+		return fmt.Errorf("%w: maximum 64 metadata keys", ErrInvalidRequest)
+	}
+	for key, value := range labels {
+		if !validKeyRegex.MatchString(key) {
+			return fmt.Errorf("%w: invalid metadata key", ErrInvalidRequest)
+		}
+		if len(value) > 1024 {
+			return fmt.Errorf("%w: metadata value exceeds 1024 bytes", ErrInvalidRequest)
+		}
+	}
+	return nil
+}
 
 func (s *DBStore) PatchMetadata(ctx context.Context, id string, patch map[string]*string) (*api.ObjectDetail, error) {
 	tx, err := s.writeDB.BeginTx(ctx, nil)
@@ -44,17 +61,11 @@ func (s *DBStore) PatchMetadata(ctx context.Context, id string, patch map[string
 		if v == nil {
 			delete(current, k)
 		} else {
-			if !validKeyRegex.MatchString(k) {
-				return nil, ErrInvalidRequest
-			}
-			if len(*v) > 1024 {
-				return nil, ErrInvalidRequest
-			}
 			current[k] = *v
 		}
 	}
 
-	if len(current) > 64 {
+	if err := ValidateCustomMetadata(current); err != nil {
 		return nil, ErrInvalidRequest
 	}
 
@@ -79,9 +90,13 @@ func (s *DBStore) PatchMetadata(ctx context.Context, id string, patch map[string
 		return nil, ErrNotFound
 	}
 
+	updated, err := objectDetail(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	return s.GetObjectWithChunks(ctx, id)
+	return updated, nil
 }

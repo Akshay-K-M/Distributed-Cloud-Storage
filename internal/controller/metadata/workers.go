@@ -58,6 +58,8 @@ func (s *DBStore) ListWorkers(ctx context.Context) ([]WorkerRow, error) {
 	return result, nil
 }
 
+// Inventory reports cached sidecar hashes. Only a verified repair may clear a
+// corruption finding made by reading the actual bytes.
 func (s *DBStore) UpsertReplica(ctx context.Context, chunkID, workerID, state string, updatedAt int64) error {
 	_, err := s.writeDB.ExecContext(ctx, `
 		INSERT INTO chunk_replicas (chunk_id, worker_id, state, updated_at)
@@ -65,6 +67,7 @@ func (s *DBStore) UpsertReplica(ctx context.Context, chunkID, workerID, state st
 		ON CONFLICT(chunk_id, worker_id) DO UPDATE SET
 			state = excluded.state,
 			updated_at = excluded.updated_at
+        WHERE chunk_replicas.state != 'CORRUPT' OR excluded.state = 'CORRUPT'
 	`, chunkID, workerID, state, updatedAt)
 	return err
 }
@@ -82,14 +85,6 @@ func (s *DBStore) DeleteReplica(ctx context.Context, chunkID, workerID string) e
 		DELETE FROM chunk_replicas
 		WHERE chunk_id = ? AND worker_id = ?
 	`, chunkID, workerID)
-	return err
-}
-
-func (s *DBStore) DeleteReplicasForWorker(ctx context.Context, workerID string) error {
-	_, err := s.writeDB.ExecContext(ctx, `
-		DELETE FROM chunk_replicas
-		WHERE worker_id = ?
-	`, workerID)
 	return err
 }
 

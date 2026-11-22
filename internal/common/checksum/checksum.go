@@ -8,11 +8,6 @@ import (
 	"strings"
 )
 
-// Hex encodes a digest as lowercase hex.
-func Hex(sum []byte) string {
-	return hex.EncodeToString(sum)
-}
-
 // SHA256Hex hashes b and returns lowercase hex.
 func SHA256Hex(b []byte) string {
 	sum := sha256.Sum256(b)

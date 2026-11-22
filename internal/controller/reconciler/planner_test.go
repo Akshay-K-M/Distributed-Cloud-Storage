@@ -138,6 +138,18 @@ func TestPlanner(t *testing.T) {
 		}
 	})
 
+	t.Run("a suspect copy cannot justify dropping a live copy", func(t *testing.T) {
+		w := map[string]reconciler.WorkerState{
+			"w1": {Status: "ALIVE"}, "w2": {Status: "ALIVE"}, "w3": {Status: "SUSPECT"},
+		}
+		chunk := reconciler.ChunkState{ChunkID: "c", Replicas: []reconciler.ReplicaState{
+			{WorkerID: "w1", State: "OK"}, {WorkerID: "w2", State: "OK"}, {WorkerID: "w3", State: "OK"},
+		}}
+		if result := reconciler.Plan(now, cfg, []reconciler.ChunkState{chunk}, w); len(result.Actions) != 0 {
+			t.Fatalf("premature trim: %+v", result.Actions)
+		}
+	})
+
 	t.Run("Over-replication trimming picks most-used worker", func(t *testing.T) {
 		chunks := []reconciler.ChunkState{
 			{

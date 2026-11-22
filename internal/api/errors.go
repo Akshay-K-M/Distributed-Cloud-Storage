@@ -1,7 +1,7 @@
 // This file defines stable API error codes and their HTTP status mapping.
 package api
 
-// Frozen error codes (plan section 4.3 / 5).
+// Error codes shared by API clients and servers.
 const (
 	CodeInvalidRequest     = "INVALID_REQUEST"
 	CodeChecksumMismatch   = "CHECKSUM_MISMATCH"
@@ -16,19 +16,19 @@ const (
 	CodeOverloaded         = "OVERLOADED"
 )
 
-// ErrorBody is the frozen JSON error envelope.
+// ErrorBody is the JSON error envelope.
 type ErrorBody struct {
 	Error ErrorDetail `json:"error"`
 }
 
-// ErrorDetail is the frozen error object.
+// ErrorDetail is an error code, message and request ID.
 type ErrorDetail struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	RequestID string `json:"request_id"`
 }
 
-// StatusFor maps a frozen error code to an HTTP status.
+// StatusFor maps an API error code to an HTTP status.
 func StatusFor(code string) int {
 	switch code {
 	case CodeInvalidRequest, CodeChecksumMismatch, CodeObjectTooLarge:

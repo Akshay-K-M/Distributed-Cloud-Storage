@@ -57,6 +57,7 @@ func NewExecutor(
 func (e *Executor) Execute(ctx context.Context, actions []Action) error {
 	sem := make(chan struct{}, e.concurrency)
 	var wg sync.WaitGroup
+	defer wg.Wait() // Join started operations even if scheduling is cancelled.
 
 	for _, act := range actions {
 		select {
@@ -89,7 +90,6 @@ func (e *Executor) Execute(ctx context.Context, actions []Action) error {
 		}(act)
 	}
 
-	wg.Wait()
 	return nil
 }
 
@@ -132,25 +132,21 @@ func (e *Executor) repairChunk(ctx context.Context, a RepairChunk) error {
 		}
 		sourceRef := workerclient.WorkerRef{ID: sourceID, Addr: wInfo.Addr}
 
-		rc, size, _, err := e.client.GetChunk(ctx, sourceRef, a.Chunk.ChunkID)
+		rc, _, _, err := e.client.GetChunk(ctx, sourceRef, a.Chunk.ChunkID)
 		if err != nil {
 			e.log.Warn("failed to fetch chunk from source replica", "source", sourceID, "chunk_id", a.Chunk.ChunkID, "err", err)
 			continue
 		}
 
-		data, err := io.ReadAll(rc)
+		data, err := io.ReadAll(io.LimitReader(rc, a.Chunk.Size+1))
 		_ = rc.Close()
 		if err != nil {
 			continue
 		}
 
-		if int64(len(data)) != size && size > 0 {
-			continue
-		}
-
 		// Verify SHA-256 against metadata
 		sumHex := checksum.SHA256Hex(data)
-		if !checksum.EqualHex(sumHex, a.Chunk.SHA) {
+		if int64(len(data)) != a.Chunk.Size || !checksum.EqualHex(sumHex, a.Chunk.SHA) {
 			e.log.Warn("source chunk checksum mismatch during repair", "source", sourceID, "chunk_id", a.Chunk.ChunkID)
 			_ = e.store.SetReplicaState(ctx, a.Chunk.ChunkID, sourceID, "CORRUPT", now)
 			continue
@@ -209,10 +205,5 @@ func (e *Executor) trimReplica(ctx context.Context, a TrimReplica) error {
 }
 
 func (e *Executor) deleteCorrupt(ctx context.Context, a DeleteCorrupt) error {
-	wInfo, ok := e.registry.Get(a.WorkerID)
-	if ok {
-		ref := workerclient.WorkerRef{ID: a.WorkerID, Addr: wInfo.Addr}
-		_ = e.client.DeleteChunk(ctx, ref, a.ChunkID)
-	}
-	return e.store.DeleteReplica(ctx, a.ChunkID, a.WorkerID)
+	return e.trimReplica(ctx, TrimReplica{ChunkID: a.ChunkID, WorkerID: a.WorkerID})
 }

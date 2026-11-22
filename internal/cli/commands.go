@@ -1,4 +1,7 @@
-// This file implements user-facing ocs subcommands and their output formats.
+// Command handlers turn a user's command into API calls and display the result.
+// The controller owns storage decisions; these handlers own command options and output.
+// All handlers return an exit code: 0 = success, 1 = operation failed,
+// 2 = invalid arguments or flags.
 package cli
 
 import (
@@ -10,19 +13,32 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+
+	"objstore/internal/common/checksum"
 )
 
 type stringSlice []string
 
+// String presents the collected --meta values as one comma-separated string.
+// Example: ["owner=alice", "album=pets"] becomes "owner=alice,album=pets".
+// The flag parser requires this method for a custom flag value.
 func (s *stringSlice) String() string {
 	return strings.Join(*s, ",")
 }
 
+// Set collects one --meta value each time the parser encounters that flag.
+// Example: --meta owner=alice --meta album=pets calls Set twice and keeps both.
+// Together, Set and String let the standard flag parser support repeated values.
 func (s *stringSlice) Set(val string) error {
 	*s = append(*s, val)
 	return nil
 }
 
+// handleCP copies between a local file and a remote object.
+// Upload example:   ocs cp photo.jpg obj:photos/ --meta owner=alice
+// Download example: ocs cp obj:photos/photo.jpg downloaded.jpg
+// It reads options, determines the direction, asks APIClient to transfer bytes,
+// and reports the result. Streaming and HTTP details live in client.go.
 func (c *CLI) handleCP(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("cp", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
@@ -34,9 +50,8 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 	fs.BoolVar(&overwrite, "overwrite", false, "overwrite existing committed object")
 	fs.Var(&metaFlags, "meta", "custom metadata key=val (can be specified multiple times)")
 	fs.StringVar(&contentType, "content-type", "", "explicit content type")
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -46,18 +61,19 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 		return 2
 	}
 
+	// Choose upload or download. Exactly one side must be remote.
 	src, dst := posArgs[0], posArgs[1]
 	srcRemote, _, _ := ParseTarget(src)
 	dstRemote, _, _ := ParseTarget(dst)
 
 	if !srcRemote && dstRemote {
-		// Upload: <local> obj:<name>
 		_, isID, remoteName := ParseTarget(dst)
 		if isID {
 			c.errorf("INVALID_USAGE", "cannot upload to raw id target %q (use obj:<name>)", dst)
 			return 2
 		}
 
+		// Upload: expand obj:photos/ into photos/<local filename>.
 		if strings.HasSuffix(dst, "/") || remoteName == "" {
 			remoteName = strings.TrimSuffix(remoteName, "/")
 			if remoteName != "" {
@@ -67,12 +83,15 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 			}
 		}
 
+		// Collect upload metadata, then send the file through the API client.
 		metaMap := make(map[string]string)
 		for _, m := range metaFlags {
 			parts := strings.SplitN(m, "=", 2)
-			if len(parts) == 2 {
-				metaMap[parts[0]] = parts[1]
+			if len(parts) != 2 {
+				c.errorf("INVALID_USAGE", "invalid metadata pair %q (must be k=v)", m)
+				return 2
 			}
+			metaMap[parts[0]] = parts[1]
 		}
 
 		obj, err := c.client.Upload(ctx, src, remoteName, overwrite, metaMap, contentType, c.Quiet, c.Stderr)
@@ -91,15 +110,14 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 		return 0
 
 	} else if srcRemote && !dstRemote {
-		// Download: obj:<name> <local|->
 		objID, resolvedName, err := c.client.ResolveObjectID(ctx, src)
 		if err != nil {
 			c.handleError(err)
 			return 1
 		}
 
+		// Download: a destination of - sends bytes to stdout for piping.
 		if dst == "-" {
-			// Stream to stdout
 			_, err := c.client.Download(ctx, objID, c.Stdout)
 			if err != nil {
 				c.handleError(err)
@@ -108,8 +126,8 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 			return 0
 		}
 
+		// Download: choose the local filename and open the output file.
 		destPath := dst
-		// If dst is an existing directory, append base name
 		fi, statErr := os.Stat(dst)
 		if statErr == nil && fi.IsDir() {
 			baseName := filepath.Base(resolvedName)
@@ -119,16 +137,23 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 			destPath = filepath.Join(dst, baseName)
 		}
 
-		outFile, err := os.Create(destPath)
+		// Publish only a complete download. Keeping the temporary file in the
+		// destination directory makes the final rename atomic on the same disk.
+		outFile, err := os.CreateTemp(filepath.Dir(destPath), ".ocs-download-*")
 		if err != nil {
-			c.errorf("INVALID_REQUEST", "failed to create local file %s: %v", destPath, err)
+			c.handleError(err)
 			return 1
 		}
-		defer outFile.Close()
-
+		defer os.Remove(outFile.Name())
 		_, err = c.client.Download(ctx, objID, outFile)
+		closeErr := outFile.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = os.Rename(outFile.Name(), destPath)
+		}
 		if err != nil {
-			_ = os.Remove(destPath)
 			c.handleError(err)
 			return 1
 		}
@@ -143,12 +168,14 @@ func (c *CLI) handleCP(ctx context.Context, args []string) int {
 	}
 }
 
+// handleCat writes a remote object's bytes to stdout without creating a file.
+// Example: ocs cat obj:notes.txt | grep TODO
+// It checks the target, resolves its object ID, and streams the download.
 func (c *CLI) handleCat(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("cat", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -172,6 +199,11 @@ func (c *CLI) handleCat(ctx context.Context, args []string) int {
 	return 0
 }
 
+// handleLS lists objects whose names begin with an optional prefix.
+// Example: ocs ls obj:photos/ shows objects and folder-like prefixes there;
+// ocs ls obj:photos/ -R lists all matching objects without grouping them.
+// It chooses the listing style, fetches the results, and prints names or JSON.
+// These folders are groups of object names, not real filesystem directories.
 func (c *CLI) handleLS(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
@@ -181,9 +213,8 @@ func (c *CLI) handleLS(ctx context.Context, args []string) int {
 
 	fs.BoolVar(&longFormat, "l", false, "long listing format")
 	fs.BoolVar(&recursive, "R", false, "recursive listing (no delimiter)")
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -193,11 +224,13 @@ func (c *CLI) handleLS(ctx context.Context, args []string) int {
 		_, _, prefix = ParseTarget(posArgs[0])
 	}
 
+	// Choose folder-like grouping (/) or a flat recursive listing (empty).
 	delimiter := "/"
 	if recursive {
 		delimiter = ""
 	}
 
+	// Fetch matching objects and grouped prefixes from the controller.
 	objects, commonPrefixes, err := c.client.List(ctx, prefix, delimiter)
 	if err != nil {
 		c.handleError(err)
@@ -233,12 +266,15 @@ func (c *CLI) handleLS(ctx context.Context, args []string) int {
 	return 0
 }
 
+// handleStat shows an object's properties and where its chunk replicas live.
+// Example: ocs stat obj:photos/photo.jpg
+// It resolves the object, fetches metadata, and prints a summary plus a chunk
+// table. This lets you inspect replication without downloading the object bytes.
 func (c *CLI) handleStat(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("stat", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -285,6 +321,7 @@ func (c *CLI) handleStat(ctx context.Context, args []string) int {
 		fmt.Fprintln(c.Stdout, "Custom Metadata: (none)")
 	}
 
+	// Display each chunk and its worker replicas for diagnosing placement.
 	if len(detail.Chunks) > 0 {
 		fmt.Fprintln(c.Stdout, "\nChunks:")
 		w := tabwriter.NewWriter(c.Stdout, 0, 4, 2, ' ', 0)
@@ -305,12 +342,19 @@ func (c *CLI) handleStat(ctx context.Context, args []string) int {
 	return 0
 }
 
+// handleMeta reads or changes the custom labels attached to one object.
+// Examples: ocs meta get obj:photo.jpg
+//
+//	ocs meta set obj:photo.jpg owner=alice
+//	ocs meta rm obj:photo.jpg owner
+//
+// It resolves the object once, then reads metadata or sends a patch. Set and rm
+// share the patch API: a string sets a key; null removes it; omitted keys stay.
 func (c *CLI) handleMeta(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("meta", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -329,6 +373,7 @@ func (c *CLI) handleMeta(ctx context.Context, args []string) int {
 	}
 
 	switch action {
+	// Read the current custom labels.
 	case "get":
 		detail, err := c.client.GetMetadata(ctx, objID)
 		if err != nil {
@@ -349,6 +394,7 @@ func (c *CLI) handleMeta(ctx context.Context, args []string) int {
 		}
 		return 0
 
+	// Build a patch from key=value arguments, then send it to the controller.
 	case "set":
 		if len(posArgs) < 3 {
 			c.errorf("INVALID_USAGE", "usage: ocs meta set obj:<name> k1=v1 [k2=v2...]")
@@ -382,6 +428,7 @@ func (c *CLI) handleMeta(ctx context.Context, args []string) int {
 		}
 		return 0
 
+	// Send null values for the requested keys so the server removes them.
 	case "rm":
 		if len(posArgs) < 3 {
 			c.errorf("INVALID_USAGE", "usage: ocs meta rm obj:<name> key1 [key2...]")
@@ -415,15 +462,21 @@ func (c *CLI) handleMeta(ctx context.Context, args []string) int {
 	}
 }
 
+// handleRM requests deletion of one object or all objects matching a prefix.
+// Examples: ocs rm obj:photo.jpg       (one object)
+//
+//	ocs rm obj:photos/ -r     (all objects under that prefix)
+//
+// Recursive deletion lists matches, then deletes them individually. It stops on
+// the first failure; earlier successful deletions are not rolled back.
 func (c *CLI) handleRM(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
 
 	var recursive bool
 	fs.BoolVar(&recursive, "r", false, "recursive delete")
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -434,6 +487,7 @@ func (c *CLI) handleRM(ctx context.Context, args []string) int {
 	}
 
 	target := posArgs[0]
+	// Recursive path: list all matches, then delete each by its object ID.
 	if recursive {
 		_, _, prefix := ParseTarget(target)
 		objects, _, err := c.client.List(ctx, prefix, "")
@@ -470,15 +524,19 @@ func (c *CLI) handleRM(ctx context.Context, args []string) int {
 	return 0
 }
 
+// handleStatus asks the controller for a cluster overview and displays it.
+// Example: ocs status --json
+// The result includes storage settings, worker health, object counts, and chunk
+// replication problems. This handler reports state; it does not initiate repairs.
 func (c *CLI) handleStatus(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
+	// Fetch one cluster snapshot, then render JSON or the tables below.
 	status, err := c.client.AdminStatus(ctx)
 	if err != nil {
 		c.handleError(err)
@@ -520,12 +578,16 @@ func (c *CLI) handleStatus(ctx context.Context, args []string) int {
 	return 0
 }
 
+// handleVerify compares a local file with the bytes downloaded for an object.
+// Example: ocs verify obj:photo.jpg downloaded.jpg
+// It hashes the local file, downloads and hashes the remote object, then prints
+// OK or MISMATCH. Reading both as streams keeps memory use bounded for big files.
+// It checks actual downloaded bytes rather than trusting only a stored checksum.
 func (c *CLI) handleVerify(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(c.Stderr)
-	c.bindGlobalFlags(fs)
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := c.parseFlags(fs, args); err != nil {
 		return 2
 	}
 
@@ -548,7 +610,7 @@ func (c *CLI) handleVerify(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	// Stream local file and compute SHA256
+	// Part 1: compute the local file checksum.
 	f, err := os.Open(localFile)
 	if err != nil {
 		c.errorf("INVALID_REQUEST", "failed to open local file %s: %v", localFile, err)
@@ -556,13 +618,13 @@ func (c *CLI) handleVerify(ctx context.Context, args []string) int {
 	}
 	defer f.Close()
 
-	localSHA, err := SHA256Reader(f)
+	localSHA, _, err := checksum.Reader(f)
 	if err != nil {
 		c.errorf("INTERNAL", "failed to hash local file: %v", err)
 		return 1
 	}
 
-	// Resolve remote object and stream to compute SHA256
+	// Part 2: download the object and compute its checksum from the response body.
 	objID, _, err := c.client.ResolveObjectID(ctx, remoteTarget)
 	if err != nil {
 		c.handleError(err)
@@ -576,13 +638,14 @@ func (c *CLI) handleVerify(ctx context.Context, args []string) int {
 	}
 	defer resp.Body.Close()
 
-	remoteSHA, err := SHA256Reader(resp.Body)
+	remoteSHA, _, err := checksum.Reader(resp.Body)
 	if err != nil {
 		c.errorf("INTERNAL", "failed to hash remote object: %v", err)
 		return 1
 	}
 
-	if HexEqual(localSHA, remoteSHA) {
+	// Part 3: compare checksums and return a result suitable for shell scripts.
+	if checksum.EqualHex(localSHA, remoteSHA) {
 		fmt.Fprintln(c.Stdout, "OK")
 		return 0
 	} else {

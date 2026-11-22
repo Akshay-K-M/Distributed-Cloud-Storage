@@ -16,7 +16,6 @@ func validTestConfig() Config {
 		UploadParallelism:     1,
 		MaxConcurrentUploads:  1,
 		MaxObjectBytes:        1,
-		DownloadPrefetch:      1,
 		HeartbeatInterval:     time.Second,
 		SuspectAfter:          2 * time.Second,
 		DeadAfter:             3 * time.Second,

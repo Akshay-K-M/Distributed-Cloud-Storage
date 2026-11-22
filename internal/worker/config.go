@@ -9,7 +9,7 @@ import (
 	"objstore/internal/worker/chunkstore"
 )
 
-// Config is worker process configuration (plan 4.2).
+// Config is worker process configuration.
 type Config struct {
 	Token             string
 	WorkerID          string

@@ -19,8 +19,6 @@ type Reconciler struct {
 	cfg       controller.Config
 	store     metadata.Store
 	registry  *registry.Registry
-	placer    *placement.Placer
-	client    workerclient.Client
 	executor  *Executor
 	gc        *GarbageCollector
 	inventory *InventorySyncer
@@ -29,9 +27,6 @@ type Reconciler struct {
 	wakeCh    chan struct{}
 	runningMu sync.Mutex
 	startTime time.Time
-
-	lastResultMu sync.RWMutex
-	lastResult   PlanResult
 }
 
 // New creates a new Reconciler.
@@ -52,8 +47,6 @@ func New(
 		cfg:       cfg,
 		store:     store,
 		registry:  reg,
-		placer:    placer,
-		client:    client,
 		wakeCh:    make(chan struct{}, 1),
 		startTime: time.Now(),
 		log:       log,
@@ -74,18 +67,18 @@ func (r *Reconciler) Wake() {
 	}
 }
 
-// InventorySyncer returns the associated InventorySyncer.
-func (r *Reconciler) InventorySyncer() *InventorySyncer {
-	return r.inventory
-}
-
 // SyncWorker triggers inventory synchronization for a single worker.
 func (r *Reconciler) SyncWorker(ctx context.Context, workerID string) error {
+	// A stale inventory must not reintroduce a replica that repair just trimmed.
+	r.runningMu.Lock()
+	defer r.runningMu.Unlock()
 	return r.inventory.SyncWorker(ctx, workerID)
 }
 
 // SyncAllWorkers triggers inventory synchronization for all alive workers.
 func (r *Reconciler) SyncAllWorkers(ctx context.Context) {
+	r.runningMu.Lock()
+	defer r.runningMu.Unlock()
 	r.inventory.SyncAllAliveWorkers(ctx)
 }
 
@@ -118,7 +111,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				r.inventory.SyncAllAliveWorkers(ctx)
+				r.SyncAllWorkers(ctx)
 			}
 		}
 	}()
@@ -156,10 +149,6 @@ func (r *Reconciler) RunPass(ctx context.Context) {
 	}
 
 	planResult := Plan(time.Now(), planCfg, chunks, workers)
-
-	r.lastResultMu.Lock()
-	r.lastResult = planResult
-	r.lastResultMu.Unlock()
 
 	if len(planResult.Actions) == 0 {
 		return
@@ -213,19 +202,11 @@ func (r *Reconciler) loadClusterState(ctx context.Context) ([]ChunkState, map[st
 		}
 	}
 
-	workerRows, err := r.store.ListWorkers(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
+	// Heartbeats refresh usage in memory. The persisted worker rows can be
+	// older, especially just after the controller restarts.
 	workers := make(map[string]WorkerState)
-	for _, wr := range workerRows {
-		workers[wr.WorkerID] = WorkerState{
-			ID:          wr.WorkerID,
-			Status:      wr.Status,
-			StatusSince: time.UnixMilli(wr.LastStatusChange),
-			UsedBytes:   wr.UsedBytes,
-		}
+	for _, w := range r.registry.All() {
+		workers[w.ID] = WorkerState{ID: w.ID, Status: w.Status, StatusSince: w.StatusSince, UsedBytes: w.UsedBytes}
 	}
 
 	return chunks, workers, nil

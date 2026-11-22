@@ -60,7 +60,6 @@ func newTestHarness(t *testing.T) *testHarness {
 		UploadParallelism:    4,
 		MaxConcurrentUploads: 16,
 		MaxObjectBytes:       5368709120,
-		DownloadPrefetch:     2,
 		SuspectAfter:         6 * time.Second,
 		DeadAfter:            15 * time.Second,
 		RepairEnabled:        true,
@@ -71,7 +70,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	placer := placement.New(reg)
 	fake := workerclient.NewFake()
 	dp := datapath.New(cfg, store, reg, placer, fake, nil)
-	ctrlServer := controller.NewServer(cfg, store, reg, placer, dp, nil)
+	ctrlServer := controller.NewServer(cfg, store, reg, dp, nil)
 
 	ctx := context.Background()
 	// Register 4 alive workers
@@ -432,10 +431,10 @@ func TestDownloadCorruptionAndFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("BothReplicasCorruptReturns503BeforeHeadersOnChunk0", func(t *testing.T) {
+	t.Run("BothReplicasCorruptOnFinalChunkReturnsJSON503", func(t *testing.T) {
 		h := newTestHarness(t)
 
-		data := []byte("important document")
+		data := bytes.Repeat([]byte("x"), (1<<20)+1)
 		req := makeMultipartRequest(t, "/api/v1/objects", "both-corrupt.txt", bytes.NewReader(data), "both-corrupt.txt", "", nil)
 		rec := httptest.NewRecorder()
 		h.handler.ServeHTTP(rec, req)
@@ -443,8 +442,11 @@ func TestDownloadCorruptionAndFallback(t *testing.T) {
 		var obj api.Object
 		_ = json.Unmarshal(rec.Body.Bytes(), &obj)
 
-		// Corrupt all GetChunk calls
+		// Leave the first chunk readable and damage both copies of the final chunk.
 		h.fake.CorruptGet = func(w workerclient.WorkerRef, chunkID string, data []byte) []byte {
+			if chunkID != obj.ObjectID+"_1" {
+				return data
+			}
 			corrupted := append([]byte(nil), data...)
 			if len(corrupted) > 0 {
 				corrupted[0] ^= 0xFF
@@ -456,7 +458,7 @@ func TestDownloadCorruptionAndFallback(t *testing.T) {
 		dlRec := httptest.NewRecorder()
 		h.handler.ServeHTTP(dlRec, dlReq)
 
-		if dlRec.Code != http.StatusServiceUnavailable {
+		if dlRec.Code != http.StatusServiceUnavailable || !json.Valid(dlRec.Body.Bytes()) {
 			t.Fatalf("expected 503, got %d: %s", dlRec.Code, dlRec.Body.String())
 		}
 	})
@@ -577,6 +579,74 @@ func TestNameConflictAndOverwrite(t *testing.T) {
 func TestMultipartEdgeCases(t *testing.T) {
 	h := newTestHarness(t)
 
+	t.Run("UnnamedFile", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		form := multipart.NewWriter(body)
+		if err := form.WriteField("file", "unnamed data"); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/objects", body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.handler.ServeHTTP(rec, req)
+		var obj api.Object
+		if rec.Code != 201 || json.Unmarshal(rec.Body.Bytes(), &obj) != nil || obj.Name == "" {
+			t.Fatalf("unnamed upload: %d %s", rec.Code, rec.Body)
+		}
+	})
+
+	for _, invalid := range []string{"null", `{"owner":null}`} {
+		t.Run("Invalid metadata "+invalid, func(t *testing.T) {
+			body := new(bytes.Buffer)
+			form := multipart.NewWriter(body)
+			if err := form.WriteField("metadata", invalid); err != nil {
+				t.Fatal(err)
+			}
+			if err := form.WriteField("file", "some bytes"); err != nil {
+				t.Fatal(err)
+			}
+			if err := form.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/objects", body)
+			req.Header.Set("Content-Type", form.FormDataContentType())
+			rec := httptest.NewRecorder()
+			h.handler.ServeHTTP(rec, req)
+			if rec.Code != 400 {
+				t.Fatalf("got %d, want 400 for %s", rec.Code, invalid)
+			}
+		})
+	}
+
+	t.Run("InvalidMetadataAfterFileRollsBack", func(t *testing.T) {
+		body := new(bytes.Buffer)
+		form := multipart.NewWriter(body)
+		file, err := form.CreateFormFile("file", "rollback.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(file, "rollback"); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.WriteField("metadata", "invalid"); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/objects", body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.handler.ServeHTTP(rec, req)
+		counts, err := h.store.ObjectCounts(context.Background())
+		if err != nil || rec.Code != 400 || counts.Uploading != 0 {
+			t.Fatalf("invalid upload: status=%d counts=%+v err=%v", rec.Code, counts, err)
+		}
+	})
+
 	t.Run("MetadataAfterFile", func(t *testing.T) {
 		body := &bytes.Buffer{}
 		mpw := multipart.NewWriter(body)
@@ -675,7 +745,7 @@ func TestBoundedMemory(t *testing.T) {
 	// Replace fake client with a discarding client so worker in-memory store doesn't retain 400 MiB
 	discardClient := &discardWorkerClient{}
 	dp := datapath.New(h.cfg, h.store, h.reg, h.placer, discardClient, nil)
-	ctrlServer := controller.NewServer(h.cfg, h.store, h.reg, h.placer, dp, nil)
+	ctrlServer := controller.NewServer(h.cfg, h.store, h.reg, dp, nil)
 	handler := ctrlServer.Handler()
 
 	runtime.GC()

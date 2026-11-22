@@ -168,7 +168,7 @@ func TestDownloadAndCat(t *testing.T) {
 	// 1. Test cat obj:sample.txt
 	var stdout, stderr bytes.Buffer
 	app := cli.New(&stdout, &stderr, nil)
-	code := app.Run([]string{"--endpoint", ts.URL, "cat", "obj:sample.txt"})
+	code := app.Run([]string{"cp", "obj:sample.txt", "-", "--endpoint", ts.URL})
 	if code != 0 {
 		t.Fatalf("cat failed with %d: %s", code, stderr.String())
 	}
@@ -188,6 +188,26 @@ func TestDownloadAndCat(t *testing.T) {
 	data, err := os.ReadFile(destFile)
 	if err != nil || string(data) != fileContent {
 		t.Errorf("downloaded file mismatch: got %q, want %q, err: %v", string(data), fileContent, err)
+	}
+}
+
+// An unavailable object must not destroy an existing local destination.
+func TestFailedDownloadPreservesDestination(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+	dest := filepath.Join(t.TempDir(), "notes")
+	if err := os.WriteFile(dest, []byte("keep me"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app := cli.New(io.Discard, io.Discard, nil)
+	if code := app.Run([]string{"cp", "id:missing", dest, "--endpoint", ts.URL}); code == 0 {
+		t.Fatal("expected download failure")
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil || string(data) != "keep me" {
+		t.Fatalf("destination after failed copy = %q, %v", data, err)
 	}
 }
 
@@ -541,7 +561,6 @@ func TestEndToEndCLIWithRealController(t *testing.T) {
 		UploadParallelism:    4,
 		MaxConcurrentUploads: 16,
 		MaxObjectBytes:       5368709120,
-		DownloadPrefetch:     2,
 		SuspectAfter:         6 * time.Second,
 		DeadAfter:            15 * time.Second,
 		RepairEnabled:        true,
@@ -552,7 +571,7 @@ func TestEndToEndCLIWithRealController(t *testing.T) {
 	placer := placement.New(reg)
 	fake := workerclient.NewFake()
 	dp := datapath.New(cfg, store, reg, placer, fake, nil)
-	ctrlServer := controller.NewServer(cfg, store, reg, placer, dp, nil)
+	ctrlServer := controller.NewServer(cfg, store, reg, dp, nil)
 
 	ctx := context.Background()
 	for i := 1; i <= 4; i++ {

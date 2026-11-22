@@ -24,7 +24,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	store, err := chunkstore.Open(cfg.DataDir)
+	store, err := chunkstore.OpenWithMaxChunk(cfg.DataDir, cfg.ChunkSize)
 	if err != nil {
 		log.Error("open store", "err", err)
 		os.Exit(1)

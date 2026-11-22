@@ -25,7 +25,7 @@ profile.cov
 go.work
 go.work.sum
 
-# env file (cluster token example is committed as .env per the plan)
+# Local cluster configuration
 .env
 
 # Build output
@@ -35,3 +35,4 @@ bin/
 # .idea/
 # .vscode/
 plan.md
+explanations.md

@@ -14,7 +14,7 @@ import (
 )
 
 func (s *DBStore) BeginUpload(ctx context.Context, name, contentType string, overwrite bool) (string, error) {
-	if !overwrite {
+	if !overwrite && name != "" {
 		var exists int
 		err := s.readDB.QueryRowContext(ctx, "SELECT 1 FROM objects WHERE name = ? AND state = 'COMMITTED' LIMIT 1", name).Scan(&exists)
 		if err == nil {
@@ -168,16 +168,19 @@ func (s *DBStore) AbortUpload(ctx context.Context, objectID string) error {
 	return err
 }
 
+const committedObjectQuery = `
+    SELECT object_id, name, size, content_type, checksum_sha256, chunk_count, created_at, modified_at, custom_metadata
+    FROM objects WHERE object_id = ? AND state = 'COMMITTED'`
+
 func (s *DBStore) GetObject(ctx context.Context, id string) (*api.Object, error) {
+	return scanObject(s.readDB.QueryRowContext(ctx, committedObjectQuery, id))
+}
+
+func scanObject(row *sql.Row) (*api.Object, error) {
 	var obj api.Object
 	var createdAt, modifiedAt int64
 	var metaJSON string
-
-	err := s.readDB.QueryRowContext(ctx, `
-		SELECT object_id, name, size, content_type, checksum_sha256, chunk_count, created_at, modified_at, custom_metadata
-		FROM objects
-		WHERE object_id = ? AND state = 'COMMITTED'
-	`, id).Scan(
+	err := row.Scan(
 		&obj.ObjectID,
 		&obj.Name,
 		&obj.Size,
@@ -199,80 +202,58 @@ func (s *DBStore) GetObject(ctx context.Context, id string) (*api.Object, error)
 	obj.ModifiedAt = formatTimestamp(modifiedAt)
 	obj.CustomMetadata = make(map[string]string)
 	if metaJSON != "" && metaJSON != "{}" {
-		_ = json.Unmarshal([]byte(metaJSON), &obj.CustomMetadata)
+		if err := json.Unmarshal([]byte(metaJSON), &obj.CustomMetadata); err != nil {
+			return nil, err
+		}
 	}
 
 	return &obj, nil
 }
 
 func (s *DBStore) GetObjectWithChunks(ctx context.Context, id string) (*api.ObjectDetail, error) {
-	obj, err := s.GetObject(ctx, id)
+	// Read the summary and locations from one SQLite snapshot even if a
+	// concurrent request deletes the object or changes its metadata.
+	tx, err := s.readDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
+	return objectDetail(ctx, tx, id)
+}
 
-	rows, err := s.readDB.QueryContext(ctx, `
-		SELECT chunk_id, idx, size, sha256
-		FROM chunks
-		WHERE object_id = ?
-		ORDER BY idx ASC
-	`, id)
+func objectDetail(ctx context.Context, tx *sql.Tx, id string) (*api.ObjectDetail, error) {
+	obj, err := scanObject(tx.QueryRowContext(ctx, committedObjectQuery, id))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT c.chunk_id, c.idx, c.size, c.sha256, COALESCE(r.worker_id, ''), COALESCE(r.state, '')
+		FROM chunks c LEFT JOIN chunk_replicas r ON r.chunk_id = c.chunk_id
+		WHERE c.object_id = ? ORDER BY c.idx, r.worker_id`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	chunks := make([]api.ChunkInfo, 0, obj.ChunkCount)
-	chunkMap := make(map[string]*api.ChunkInfo)
-
 	for rows.Next() {
-		var ci api.ChunkInfo
-		if err := rows.Scan(&ci.ChunkID, &ci.Index, &ci.Size, &ci.SHA256); err != nil {
+		var ch api.ChunkInfo
+		var replica api.ReplicaInfo
+		if err := rows.Scan(&ch.ChunkID, &ch.Index, &ch.Size, &ch.SHA256, &replica.WorkerID, &replica.State); err != nil {
 			return nil, err
 		}
-		ci.Replicas = []api.ReplicaInfo{}
-		chunks = append(chunks, ci)
+		if len(chunks) == 0 || chunks[len(chunks)-1].ChunkID != ch.ChunkID {
+			ch.Replicas = []api.ReplicaInfo{}
+			chunks = append(chunks, ch)
+		}
+		if replica.WorkerID != "" {
+			last := &chunks[len(chunks)-1]
+			last.Replicas = append(last.Replicas, replica)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	for i := range chunks {
-		chunkMap[chunks[i].ChunkID] = &chunks[i]
-	}
-
-	repRows, err := s.readDB.QueryContext(ctx, `
-		SELECT r.chunk_id, r.worker_id, r.state
-		FROM chunk_replicas r
-		JOIN chunks c ON r.chunk_id = c.chunk_id
-		WHERE c.object_id = ?
-		ORDER BY c.idx ASC, r.worker_id ASC
-	`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer repRows.Close()
-
-	for repRows.Next() {
-		var chID, wID, state string
-		if err := repRows.Scan(&chID, &wID, &state); err != nil {
-			return nil, err
-		}
-		if ci, ok := chunkMap[chID]; ok {
-			ci.Replicas = append(ci.Replicas, api.ReplicaInfo{
-				WorkerID: wID,
-				State:    state,
-			})
-		}
-	}
-	if err := repRows.Err(); err != nil {
-		return nil, err
-	}
-
-	return &api.ObjectDetail{
-		Object: *obj,
-		Chunks: chunks,
-	}, nil
+	return &api.ObjectDetail{Object: *obj, Chunks: chunks}, nil
 }
 
 func (s *DBStore) MarkDeleting(ctx context.Context, id string) error {

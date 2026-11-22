@@ -59,6 +59,11 @@ func (s *InventorySyncer) SyncWorker(ctx context.Context, workerID string) error
 	}
 
 	ref := workerclient.WorkerRef{ID: workerID, Addr: wInfo.Addr}
+	// Only older replica rows can be missing from the upcoming worker snapshot.
+	known, err := s.store.ListChunkIDsForWorker(ctx, workerID)
+	if err != nil {
+		return err
+	}
 	inv, err := s.client.ListChunks(ctx, ref)
 	if err != nil {
 		s.log.Warn("inventory sync failed to list chunks", "worker_id", workerID, "err", err)
@@ -66,59 +71,46 @@ func (s *InventorySyncer) SyncWorker(ctx context.Context, workerID string) error
 	}
 
 	now := time.Now().UnixMilli()
-	reported := make(map[string]bool)
-
-	// 1. Process reported chunks
+	reported := make(map[string]string, len(inv.Chunks)+len(inv.Quarantined))
 	for _, ch := range inv.Chunks {
-		reported[ch.ChunkID] = true
-
-		objState, expectedSHA, objID, err := s.store.GetChunkObjectInfo(ctx, ch.ChunkID)
-		if err == nil && objState == "COMMITTED" {
-			// Known committed chunk: adopt or update state
-			if checksum.EqualHex(ch.SHA256, expectedSHA) {
-				_ = s.store.UpsertReplica(ctx, ch.ChunkID, workerID, "OK", now)
-			} else {
-				s.log.Warn("inventory sync found corrupted chunk", "worker_id", workerID, "chunk_id", ch.ChunkID)
-				_ = s.store.UpsertReplica(ctx, ch.ChunkID, workerID, "CORRUPT", now)
+		reported[ch.ChunkID] = ch.SHA256
+	}
+	for _, id := range inv.Quarantined {
+		reported[id] = "" // Present on disk, but the scrubber rejected its contents.
+	}
+	for id, sha := range reported {
+		if sep := strings.LastIndexByte(id, '_'); sep > 0 && s.inFlight != nil && s.inFlight.IsInFlight(id[:sep]) {
+			continue
+		}
+		state, expected, _, err := s.store.GetChunkObjectInfo(ctx, id)
+		if err != nil && !errors.Is(err, metadata.ErrNotFound) {
+			return err
+		}
+		if state != "COMMITTED" {
+			if err := s.client.DeleteChunk(ctx, ref, id); err != nil && !errors.Is(err, workerclient.ErrChunkNotFound) {
+				return err
 			}
-		} else {
-			// Chunk is unknown in DB or its object is not COMMITTED
-			candObjID := objID
-			if candObjID == "" {
-				if lastIdx := strings.LastIndex(ch.ChunkID, "_"); lastIdx > 0 {
-					candObjID = ch.ChunkID[:lastIdx]
-				}
-			}
-			if candObjID != "" && s.inFlight != nil && s.inFlight.IsInFlight(candObjID) {
-				// Upload in progress: do not delete
-				continue
-			}
-
-			// Orphan chunk: purge from worker
-			s.log.Info("inventory sync deleting orphan chunk from worker", "worker_id", workerID, "chunk_id", ch.ChunkID)
-			_ = s.client.DeleteChunk(ctx, ref, ch.ChunkID)
+			continue
+		}
+		replicaState := "CORRUPT"
+		if sha != "" && checksum.EqualHex(sha, expected) {
+			replicaState = "OK"
+		}
+		if err := s.store.UpsertReplica(ctx, id, workerID, replicaState, now); err != nil {
+			return err
 		}
 	}
-
-	// 2. Detect lost chunks on the worker (rows in DB not reported by alive worker)
 	if wInfo.Status == "ALIVE" {
-		dbChunkIDs, err := s.store.ListChunkIDsForWorker(ctx, workerID)
-		if err == nil {
-			for _, chID := range dbChunkIDs {
-				if !reported[chID] {
-					s.log.Warn("inventory sync detected missing chunk on worker, deleting replica row", "worker_id", workerID, "chunk_id", chID)
-					_ = s.store.DeleteReplica(ctx, chID, workerID)
+		for _, id := range known {
+			if _, present := reported[id]; !present {
+				if err := s.store.DeleteReplica(ctx, id, workerID); err != nil {
+					return err
 				}
 			}
 		}
 	}
 
-	// 3. Mark quarantined chunks as CORRUPT
-	for _, qID := range inv.Quarantined {
-		_ = s.store.SetReplicaState(ctx, qID, workerID, "CORRUPT", now)
-	}
-
-	// 4. Wake reconciler to re-evaluate cluster health
+	// Wake reconciler to re-evaluate cluster health
 	if s.onWake != nil {
 		s.onWake()
 	}

@@ -22,31 +22,6 @@ cat "${TMP_DIR}/tail.dat" >> "${TMP_DIR}/replicated.dat"
 ${OCS_EXEC} cp "${TMP_DIR}/replicated.dat" "obj:demo3/replicated.dat" --overwrite
 log_pass "Upload succeeded"
 
-log_step "2. Querying metadata details for chunk replica locations"
-STAT_OUT=$(${OCS_EXEC} --json stat "obj:demo3/replicated.dat")
-echo "${STAT_OUT}"
-
-# Parse the CLI response and verify RF=2 with distinct worker IDs.
-CHUNKS_JSON=$(echo "${STAT_OUT}" | grep -o '"chunks":\[.*\]' || true)
-if [[ -z "${CHUNKS_JSON}" ]]; then
-  # Use the metadata endpoint if the CLI output is not JSON-shaped as expected.
-  META=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/objects?name=demo3/replicated.dat")
-  OBJ_ID=$(echo "${META}" | grep -o '"object_id":"[^"]*"' | head -1 | cut -d'"' -f4)
-  DETAIL=$(curl -sf -H "Authorization: Bearer ${TOKEN}" "${ENDPOINT}/api/v1/objects/${OBJ_ID}/metadata")
-  echo "API detail: ${DETAIL}"
-fi
-
-log_pass "Verified each chunk has exactly 2 distinct replica placements"
-
-log_step "3. Verifying physical chunks on docker containers"
-# Inspect worker volumes as an additional placement check.
-if ${COMPOSE_CMD} ps | grep -q "worker1"; then
-  for w in worker1 worker2 worker3 worker4; do
-    CHUNK_FILES=$(${COMPOSE_CMD} exec -T "$w" find /data/chunks -type f 2>/dev/null || true)
-    COUNT=$(echo "${CHUNK_FILES}" | grep -c "data" || true)
-    log_info "Container $w stores $COUNT chunk replica(s)"
-  done
-  log_pass "Physical chunk files verified on worker volumes"
-fi
-
-echo -e "\n${GREEN}${BOLD}✓ Demo 3 PASSED: RF=2 replication and physical placement verified!${NC}"
+log_step "Checking every chunk against files on the four worker volumes"
+check_replicas "obj:demo3/replicated.dat"
+log_pass "Each chunk has two distinct, checksum-verified replicas"

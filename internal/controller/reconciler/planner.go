@@ -2,7 +2,6 @@
 package reconciler
 
 import (
-	"log/slog"
 	"sort"
 	"time"
 )
@@ -91,6 +90,7 @@ func Plan(now time.Time, cfg PlannerConfig, chunks []ChunkState, workers map[str
 	for _, ch := range chunks {
 		counted := 0
 		var okSources []string
+		var aliveSources []string
 		var deadOKSources []string
 		var corruptReplicas []string
 		exclude := make(map[string]bool)
@@ -110,6 +110,9 @@ func Plan(now time.Time, cfg PlannerConfig, chunks []ChunkState, workers map[str
 			}
 
 			if rep.State == "OK" {
+				if w.Status == "ALIVE" {
+					aliveSources = append(aliveSources, rep.WorkerID)
+				}
 				if w.Status == "ALIVE" || w.Status == "SUSPECT" {
 					counted++
 					okSources = append(okSources, rep.WorkerID)
@@ -128,11 +131,8 @@ func Plan(now time.Time, cfg PlannerConfig, chunks []ChunkState, workers map[str
 		}
 
 		if counted < cfg.ReplicationFactor {
-			allOKSources := append(append([]string(nil), okSources...), deadOKSources...)
-
-			if len(allOKSources) == 0 {
+			if len(okSources) == 0 && len(deadOKSources) == 0 {
 				res.Lost++
-				slog.Error("CHUNK_LOST: no OK replica found on any worker", "chunk_id", ch.ChunkID)
 			} else {
 				res.UnderReplicated++
 				if cfg.RepairEnabled {
@@ -160,14 +160,16 @@ func Plan(now time.Time, cfg PlannerConfig, chunks []ChunkState, workers map[str
 			res.OverReplicated++
 			if cfg.RepairEnabled {
 				// Excess replicas to trim from most-used workers
-				excess := counted - cfg.ReplicationFactor
+				// A suspect or recently dead worker can delay a repair, but
+				// its copy cannot justify deleting a reachable one.
+				excess := len(aliveSources) - cfg.ReplicationFactor
 
 				type candidate struct {
 					workerID  string
 					usedBytes int64
 				}
 				var candidates []candidate
-				for _, wID := range okSources {
+				for _, wID := range aliveSources {
 					candidates = append(candidates, candidate{
 						workerID:  wID,
 						usedBytes: workers[wID].UsedBytes,
@@ -189,7 +191,7 @@ func Plan(now time.Time, cfg PlannerConfig, chunks []ChunkState, workers map[str
 		}
 
 		// Delete corrupt copies if chunk already has enough OK copies
-		if counted >= cfg.ReplicationFactor {
+		if cfg.RepairEnabled && len(aliveSources) >= cfg.ReplicationFactor {
 			for _, wID := range corruptReplicas {
 				deletes = append(deletes, DeleteCorrupt{
 					ChunkID:  ch.ChunkID,

@@ -8,7 +8,7 @@ import (
 	"objstore/internal/common/config"
 )
 
-// Config holds all controller configuration parameters (plan section 4.2).
+// Config holds all controller configuration parameters.
 type Config struct {
 	ClusterToken          string
 	ListenAddr            string
@@ -19,7 +19,6 @@ type Config struct {
 	UploadParallelism     int
 	MaxConcurrentUploads  int
 	MaxObjectBytes        int64
-	DownloadPrefetch      int
 	HeartbeatInterval     time.Duration
 	SuspectAfter          time.Duration
 	DeadAfter             time.Duration
@@ -67,11 +66,6 @@ func LoadConfig() (Config, error) {
 	}
 
 	maxObjBytes, err := config.EnvInt64("MAX_OBJECT_BYTES", 5368709120) // 5 GiB
-	if err != nil {
-		return Config{}, err
-	}
-
-	dlPrefetch, err := config.EnvInt("DOWNLOAD_PREFETCH", 2)
 	if err != nil {
 		return Config{}, err
 	}
@@ -131,7 +125,6 @@ func LoadConfig() (Config, error) {
 		UploadParallelism:     uploadPar,
 		MaxConcurrentUploads:  maxUploads,
 		MaxObjectBytes:        maxObjBytes,
-		DownloadPrefetch:      dlPrefetch,
 		HeartbeatInterval:     hbInterval,
 		SuspectAfter:          suspectAfter,
 		DeadAfter:             deadAfter,
@@ -172,9 +165,6 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxObjectBytes <= 0 {
 		return fmt.Errorf("MAX_OBJECT_BYTES must be > 0, got %d", c.MaxObjectBytes)
-	}
-	if c.DownloadPrefetch < 1 {
-		return fmt.Errorf("DOWNLOAD_PREFETCH must be >= 1, got %d", c.DownloadPrefetch)
 	}
 	if c.HeartbeatInterval <= 0 {
 		return fmt.Errorf("HEARTBEAT_INTERVAL must be > 0")
