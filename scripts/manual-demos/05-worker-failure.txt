@@ -1,0 +1,78 @@
+# From the project root in Bash, create the local settings file if it is missing.
+test -f .env || cp .env.example .env
+
+# Start the controller and four workers.
+make up
+
+# Build the command-line client used below.
+make build
+
+# Check worker status. Repeat until all four workers show ALIVE.
+./bin/ocs status
+
+# Create a temporary folder for this run. Keep using the same terminal.
+tmp=$(mktemp -d)
+
+# Give the demo object a name in the store.
+obj=obj:demo5/failover.bin
+
+# Create a 4 MiB binary file from random bytes.
+dd if=/dev/urandom of="$tmp/source" bs=524288 count=8
+
+# Upload the file, replacing any previous demo object with this name.
+./bin/ocs cp "$tmp/source" "$obj" --overwrite
+
+# Save the catalog entry so we can identify this upload on disk.
+./bin/ocs --json stat "$obj" > "$tmp/map"
+
+# Read its unique object ID. Its chunk filenames begin with this ID.
+id=$(jq -r '.object_id' "$tmp/map")
+
+# Define a command that prints each chunk file and its SHA-256 checksum on the workers you name.
+show_copies() {
+  for worker in "$@"; do
+    echo "$worker"
+    docker compose exec -T "$worker" find /data/chunks -type f \
+      -name "${id}_*" ! -name '*.meta' -exec sha256sum '{}' ';'
+  done
+}
+
+# Show the catalog checksum and replica locations for every chunk.
+./bin/ocs --json stat "$obj" | jq '.chunks[] | {chunk_id, sha256, replicas}'
+
+# Check the files against the catalog above. Each chunk filename should appear on two different workers with the listed checksum.
+show_copies worker1 worker2 worker3 worker4
+
+# Pick worker2 if it holds a demo chunk, otherwise pick a worker that does.
+holder=$(jq -er '[.chunks[].replicas[].worker_id] | if index("worker2")!=null then "worker2" else first end' "$tmp/map")
+
+# Stop that worker. To recover after an interruption, run docker compose start "$holder".
+docker compose stop "$holder"
+
+# Download the object into a second local file.
+./bin/ocs cp "$obj" "$tmp/download"
+
+# Compare the files byte for byte. A match prints the message below.
+cmp "$tmp/source" "$tmp/download" && echo "Downloaded bytes match"
+
+# Repeat until the controller marks the stopped worker DEAD. Leave it stopped while checking repair.
+./bin/ocs status
+
+# Show the files on the three running workers. Repeat until each chunk has two matching copies on different workers.
+for worker in worker1 worker2 worker3 worker4; do
+  if [ "$worker" != "$holder" ]; then
+    show_copies "$worker"
+  fi
+done
+
+# Restart the stopped worker.
+docker compose start "$holder"
+
+# Wait for the returning worker to show ALIVE.
+./bin/ocs status
+
+# Read the current catalog to see the final replica locations.
+./bin/ocs --json stat "$obj" | jq '.chunks[] | {chunk_id, sha256, replicas}'
+
+# Check all four disks again. Repeat the last two commands until each chunk has exactly the two copies shown in the catalog.
+show_copies worker1 worker2 worker3 worker4

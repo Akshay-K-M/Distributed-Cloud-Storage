@@ -1,0 +1,76 @@
+# From the project root in Bash, create the local settings file if it is missing.
+test -f .env || cp .env.example .env
+
+# Start the controller and four workers.
+make up
+
+# Build the command-line client used below.
+make build
+
+# Check worker status. Repeat until all four workers show ALIVE.
+./bin/ocs status
+
+# Create a temporary folder for this run. Keep using the same terminal.
+tmp=$(mktemp -d)
+
+# Give the demo object a name in the store.
+obj=obj:demo6/integrity_test.bin
+
+# Create a 2 MiB binary file from random bytes.
+dd if=/dev/urandom of="$tmp/source" bs=524288 count=4
+
+# Upload the file, replacing any previous demo object with this name.
+./bin/ocs cp "$tmp/source" "$obj" --overwrite
+
+# Save the catalog entry so we can identify this upload on disk.
+./bin/ocs --json stat "$obj" > "$tmp/map"
+
+# Read its unique object ID. Its chunk filenames begin with this ID.
+id=$(jq -r '.object_id' "$tmp/map")
+
+# Define a command that prints each chunk file and its SHA-256 checksum on the workers you name.
+show_copies() {
+  for worker in "$@"; do
+    echo "$worker"
+    docker compose exec -T "$worker" find /data/chunks -type f \
+      -name "${id}_*" ! -name '*.meta' -exec sha256sum '{}' ';'
+  done
+}
+
+# Show the catalog checksum and replica locations for every chunk.
+./bin/ocs --json stat "$obj" | jq '.chunks[] | {chunk_id, sha256, replicas}'
+
+# Check the files against the catalog above. Each chunk filename should appear on two different workers with the listed checksum.
+show_copies worker1 worker2 worker3 worker4
+
+# Choose the first chunk of this demo object.
+chunk=$(jq -er '.chunks[0].chunk_id' "$tmp/map")
+
+# Identify one worker holding a copy of that chunk.
+holder=$(jq -er '.chunks[0].replicas[0].worker_id' "$tmp/map")
+
+# Find that copy on the worker volume.
+file=$(docker compose exec -T "$holder" find /data/chunks -type f -name "$chunk" -print -quit)
+
+# Append one byte to damage only this demo copy.
+test -n "$file" && docker compose exec -T "$holder" sh -c 'printf x >> "$1"' sh "$file"
+
+# Ask the controller to start a checksum scan on that worker.
+docker compose exec -T "$holder" sh -c 'wget -qO- --post-data="" \
+  --header="Authorization: Bearer $CLUSTER_TOKEN" \
+  "http://controller:8080/api/v1/admin/scrub?worker=$WORKER_ID"'
+
+# Check the worker log for this chunk ID. Repeat until the quarantine entry appears.
+docker compose logs --no-color "$holder" | grep 'scrub quarantined chunks' | grep -F "$chunk"
+
+# Download the object into a second local file.
+./bin/ocs cp "$obj" "$tmp/download"
+
+# Compare the files byte for byte. A match prints the message below.
+cmp "$tmp/source" "$tmp/download" && echo "Downloaded bytes match"
+
+# Read the catalog again to see where the repaired copies are stored.
+./bin/ocs --json stat "$obj" | jq '.chunks[] | {chunk_id, sha256, replicas}'
+
+# Repeat the last two commands until every chunk has two physical copies with the expected checksum.
+show_copies worker1 worker2 worker3 worker4

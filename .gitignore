@@ -36,3 +36,7 @@ bin/
 # .vscode/
 plan.md
 explanations.md
+
+# Local résumé measurement harness
+/scripts/measure_reliability.py
+/resume-metrics/

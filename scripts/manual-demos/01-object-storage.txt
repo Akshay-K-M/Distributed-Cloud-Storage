@@ -1,0 +1,56 @@
+# From the project root in Bash, create the local settings file if it is missing.
+test -f .env || cp .env.example .env
+
+# Start the controller and four workers.
+make up
+
+# Build the command-line client used below.
+make build
+
+# Check worker status. Repeat until all four workers show ALIVE.
+./bin/ocs status
+
+# Create a temporary folder for this run. Keep using the same terminal.
+tmp=$(mktemp -d)
+
+# Give the demo object a name in the store.
+obj=obj:demo1/large_file.bin
+
+# Create a 3.5 MiB binary file from random bytes.
+dd if=/dev/urandom of="$tmp/source" bs=524288 count=7
+
+# Upload the file, replacing any previous demo object with this name.
+./bin/ocs cp "$tmp/source" "$obj" --overwrite
+
+# Download the object into a second local file.
+./bin/ocs cp "$obj" "$tmp/download"
+
+# Compare the files byte for byte. A match prints the message below.
+cmp "$tmp/source" "$tmp/download" && echo "Downloaded bytes match"
+
+# Print both SHA-256 checksums. The two values should match.
+shasum -a 256 "$tmp/source" "$tmp/download"
+
+# Create a small text file.
+echo 'Hello, Distributed Object Store!' > "$tmp/hello.txt"
+
+# Create a small JSON file.
+echo '{"demo":true,"phase":4,"reliable":true}' > "$tmp/data.json"
+
+# Upload the text file.
+./bin/ocs cp "$tmp/hello.txt" obj:demo1/hello.txt --overwrite
+
+# Upload the JSON file with its content type.
+./bin/ocs cp "$tmp/data.json" obj:demo1/data.json --content-type application/json --overwrite
+
+# List the three objects under demo1/.
+./bin/ocs ls obj:demo1/
+
+# Check the original binary against the stored checksum.
+./bin/ocs verify "$obj" "$tmp/source"
+
+# Delete the text object.
+./bin/ocs rm obj:demo1/hello.txt
+
+# List the objects again. The text object should be gone.
+./bin/ocs ls obj:demo1/

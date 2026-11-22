@@ -1,0 +1,46 @@
+# From the project root in Bash, create the local settings file if it is missing.
+test -f .env || cp .env.example .env
+
+# Start the controller and four workers.
+make up
+
+# Build the command-line client used below.
+make build
+
+# Check worker status. Repeat until all four workers show ALIVE.
+./bin/ocs status
+
+# Create a temporary folder for this run. Keep using the same terminal.
+tmp=$(mktemp -d)
+
+# Give the demo object a name in the store.
+obj=obj:demo4/doc.txt
+
+# Create a text document.
+echo 'Important document payload' > "$tmp/doc.txt"
+
+# Upload it with two custom labels.
+./bin/ocs cp "$tmp/doc.txt" "$obj" --meta env=prod --meta author=alice --overwrite
+
+# Save the original metadata for comparison.
+./bin/ocs --json stat "$obj" > "$tmp/before"
+
+# Display the original labels.
+jq '.custom_metadata' "$tmp/before"
+
+# Change the author to bob and add a review status.
+./bin/ocs meta set "$obj" author=bob status=reviewed
+
+# Remove the env label.
+./bin/ocs meta rm "$obj" env
+
+# Fetch the updated metadata for the same object.
+./bin/ocs --json stat "$obj" > "$tmp/after"
+
+# Check that only the two expected labels remain.
+jq -e '.custom_metadata=={"author":"bob","status":"reviewed"}' "$tmp/after"
+
+# Compare all other fields, excluding the modification time. A match confirms the object and its chunks stayed the same.
+diff \
+  <(jq -S 'del(.custom_metadata,.modified_at)' "$tmp/before") \
+  <(jq -S 'del(.custom_metadata,.modified_at)' "$tmp/after") && echo "Same object, chunks and replicas"

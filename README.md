@@ -55,6 +55,8 @@ API errors include a JSON message. Invalid input returns 400, a missing object 4
 
 ## Run the demonstrations
 
+For a manual walkthrough, open the [six command files](docs/manual-demos/) and paste one block at a time into Bash from the project root. Each file includes its own setup. In the failure and corruption demos, wait for the indicated recovery checks before continuing.
+
 The host-side demos use Bash, Make, Docker Compose, `curl`, `jq`, a local Go toolchain or installed `ocs`, and `sha256sum` or `shasum`. Run them on a local demo cluster. They create objects under `demo1/` through `demo6/`, stop and restart a worker, and damage one replica of a demo object.
 
 ```sh

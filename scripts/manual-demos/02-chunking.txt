@@ -1,0 +1,35 @@
+# From the project root in Bash, create the local settings file if it is missing.
+test -f .env || cp .env.example .env
+
+# Start the controller and four workers.
+make up
+
+# Build the command-line client used below.
+make build
+
+# Check worker status. Repeat until all four workers show ALIVE.
+./bin/ocs status
+
+# Create a temporary folder for this run. Keep using the same terminal.
+tmp=$(mktemp -d)
+
+# Give the demo object a name in the store.
+obj=obj:demo2/chunked.dat
+
+# Create a 10.5 MiB binary file from random bytes.
+dd if=/dev/urandom of="$tmp/source" bs=524288 count=21
+
+# Upload the file, replacing any previous demo object with this name.
+./bin/ocs cp "$tmp/source" "$obj" --overwrite
+
+# Show the index, byte count and workers for each chunk. Look for indices 0 through 10, ten sizes of 1048576 and a final size of 524288.
+./bin/ocs --json stat "$obj" | jq '.chunks[] | {index, size, workers: [.replicas[].worker_id]}'
+
+# Download the object into a second local file.
+./bin/ocs cp "$obj" "$tmp/download"
+
+# Compare the files byte for byte. A match prints the message below.
+cmp "$tmp/source" "$tmp/download" && echo "Downloaded bytes match"
+
+# Print both SHA-256 checksums. The two values should match.
+shasum -a 256 "$tmp/source" "$tmp/download"

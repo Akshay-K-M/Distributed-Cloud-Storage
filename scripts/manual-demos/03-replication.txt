@@ -1,0 +1,44 @@
+# From the project root in Bash, create the local settings file if it is missing.
+test -f .env || cp .env.example .env
+
+# Start the controller and four workers.
+make up
+
+# Build the command-line client used below.
+make build
+
+# Check worker status. Repeat until all four workers show ALIVE.
+./bin/ocs status
+
+# Create a temporary folder for this run. Keep using the same terminal.
+tmp=$(mktemp -d)
+
+# Give the demo object a name in the store.
+obj=obj:demo3/replicated.dat
+
+# Create a 2.5 MiB binary file from random bytes.
+dd if=/dev/urandom of="$tmp/source" bs=524288 count=5
+
+# Upload the file, replacing any previous demo object with this name.
+./bin/ocs cp "$tmp/source" "$obj" --overwrite
+
+# Save the catalog entry so we can identify this upload on disk.
+./bin/ocs --json stat "$obj" > "$tmp/map"
+
+# Read its unique object ID. Its chunk filenames begin with this ID.
+id=$(jq -r '.object_id' "$tmp/map")
+
+# Define a command that prints each chunk file and its SHA-256 checksum on the workers you name.
+show_copies() {
+  for worker in "$@"; do
+    echo "$worker"
+    docker compose exec -T "$worker" find /data/chunks -type f \
+      -name "${id}_*" ! -name '*.meta' -exec sha256sum '{}' ';'
+  done
+}
+
+# Show the catalog checksum and replica locations for every chunk.
+./bin/ocs --json stat "$obj" | jq '.chunks[] | {chunk_id, sha256, replicas}'
+
+# Check the files against the catalog above. Each chunk filename should appear on two different workers with the listed checksum.
+show_copies worker1 worker2 worker3 worker4
