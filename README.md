@@ -53,27 +53,6 @@ curl -F 'file=@README.md;type=text/markdown' \
 
 API errors include a JSON message. Invalid input returns 400, a missing object 404, a name conflict 409, an internal error 500, and insufficient available storage or readable replicas 503.
 
-## Run the demonstrations
-
-For a manual walkthrough, open the [six command files](docs/manual-demos/) and paste one block at a time into Bash from the project root. Each file includes its own setup. In the failure and corruption demos, wait for the indicated recovery checks before continuing.
-
-The host-side demos use Bash, Make, Docker Compose, `curl`, `jq`, a local Go toolchain or installed `ocs`, and `sha256sum` or `shasum`. Run them on a local demo cluster. They create objects under `demo1/` through `demo6/`, stop and restart a worker, and damage one replica of a demo object.
-
-```sh
-make demo
-```
-
-| Demo | Observable result |
-|---|---|
-| 1. Object storage | A binary download matches its source checksum. Listing and deletion work. |
-| 2. Chunking | A 10.5 MiB object has ten full chunks and a 512 KiB tail in the correct order. |
-| 3. Replication | Each recorded location matches a physical file with the expected SHA-256 digest. |
-| 4. Metadata | Existing labels can be changed, added and removed after upload. |
-| 5. Worker failure | A download succeeds during the outage. Two copies are verified on surviving workers and again after restart. |
-| 6. Data integrity | A worker quarantines a deliberately damaged chunk. The download matches and two verified copies are restored. |
-
-Run one scenario with, for example, `bash scripts/demo/d5_failure.sh`. It prefers worker2 and selects another replica holder when the test object has no chunks on worker2.
-
 ## Development and shutdown
 
 | Command | Purpose |
